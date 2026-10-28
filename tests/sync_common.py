@@ -84,7 +84,8 @@ def main(argv):
             if got is None:
                 bad.append("%s: %s block missing" % (rel, name))
                 if not check:
-                    at = insert_at(text)
+                    cspan = find(text, "common")
+                    at = cspan[1] if (name != "common" and cspan) else insert_at(text)
                     with open(os.path.join(ROOT, rel), "w", encoding="utf-8") as fh:
                         fh.write(text[:at] + "\n\n" + want + text[at:])
                     inserted.add(bad[-1])

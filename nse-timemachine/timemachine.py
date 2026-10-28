@@ -276,6 +276,61 @@ def yahoo_quote(sym):
     return _urlparse.quote(yahoo_symbol(sym), safe="")
 # --- nse common: end ---
 
+# --- nse charges: begin ---
+# Intraday equity charges (Zerodha-style). Shared by the charge-aware tools and kept identical by
+# tests/sync_common.py. Edit it in nse-exit/exit.py only. Override key by key under "charges" in config.
+import decimal as _decimal
+
+# rates checked against zerodha.com/charges on 2026-10-28
+CHARGES_DEFAULT = {
+    "brokerage_flat": 20,       # rupees per executed order
+    "brokerage_pct": 0.03,      # percent of the side's value; the lower of the two applies
+    "stt_sell_pct": 0.025,      # percent, sell side
+    "txn_pct": 0.00307,         # NSE transaction charge, percent, both sides
+    "sebi_per_crore": 10,       # rupees per crore of turnover, both sides
+    "stamp_buy_pct": 0.003,     # percent, buy side
+    "gst_pct": 18,              # percent of brokerage + txn + SEBI
+}
+
+
+def _cd(x):
+    return x if isinstance(x, _Dec) else _Dec(str(x))
+
+
+def _paisa(x):
+    return _cd(x).quantize(_Dec("0.01"), rounding=_HALF_UP)
+
+
+def charges(buy_value, sell_value, cfg_charges=None):
+    """Round-trip charges in rupees as Decimals: brokerage, stt, txn, sebi, stamp, gst, total.
+    Each component rounds half up to the paisa before summing; GST is on the rounded components."""
+    c = dict(CHARGES_DEFAULT)
+    c.update(cfg_charges or {})
+    buy, sell = _cd(buy_value), _cd(sell_value)
+    pct = _Dec(100)
+
+    def brokerage(v):
+        if v <= 0:
+            return _Dec("0.00")
+        return _paisa(min(_cd(c["brokerage_flat"]), _cd(c["brokerage_pct"]) * v / pct))
+
+    out = {
+        "brokerage": brokerage(buy) + brokerage(sell),
+        "stt": _paisa(_cd(c["stt_sell_pct"]) * sell / pct),
+        "txn": _paisa(_cd(c["txn_pct"]) * buy / pct) + _paisa(_cd(c["txn_pct"]) * sell / pct),
+        "sebi": _paisa(_cd(c["sebi_per_crore"]) * buy / _Dec(10000000)) + _paisa(_cd(c["sebi_per_crore"]) * sell / _Dec(10000000)),
+        "stamp": _paisa(_cd(c["stamp_buy_pct"]) * buy / pct),
+    }
+    out["gst"] = _paisa(_cd(c["gst_pct"]) * (out["brokerage"] + out["txn"] + out["sebi"]) / pct)
+    out["total"] = sum(out.values(), _Dec("0.00"))
+    return out
+
+
+def round_trip(qty, entry, exit_, cfg=None):
+    """Total charges for buying qty at entry and selling at exit_."""
+    return charges(_cd(qty) * _cd(entry), _cd(qty) * _cd(exit_), cfg)["total"]
+# --- nse charges: end ---
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0        # seconds to wait once after a 429
