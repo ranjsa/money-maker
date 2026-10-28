@@ -42,7 +42,12 @@ NSE_SEC_LIST = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
 NSE_ANNOUNCEMENTS = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
 GOOGLE_RELIANCE = ("https://news.google.com/rss/search?q=%22Reliance%20Industries%22%20share"
                    "&hl=en-IN&gl=IN&ceid=IN:en")
-NEWS_KEEP = {"google-RELIANCE.xml": (15, None), "Online_announcements.xml": (30, "<title>UCO Bank</title>")}
+NEWS_KEEP = {"google-RELIANCE.xml": (15, None), "Online_announcements.xml": (30, "<title>UCO Bank</title>"),
+             "Financial_Results.xml": (25, None)}
+NSE_FINANCIAL_RESULTS = "https://nsearchives.nseindia.com/content/RSS/Financial_Results.xml"
+FUNDAMENTALS = ("https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{sym}"
+                "?type=quarterlyTotalRevenue,quarterlyGrossProfit,quarterlyOperatingIncome,quarterlyNetIncome,"
+                "quarterlyDilutedEPS&period1=1640995200&period2={p2}")
 NSE_HOLIDAY_MASTER = "https://www.nseindia.com/api/holiday-master?type=trading"
 
 # Liquid names kept in the trimmed EQUITY_L.csv (plus M&M, BAJAJ-AUTO and two BE rows, see trim_equity_l).
@@ -105,6 +110,17 @@ REGISTRY = {
             (GOOGLE_RELIANCE, "google-RELIANCE.xml"),
             (NSE_ANNOUNCEMENTS, "Online_announcements.xml"),
             (YAHOO + "/v8/finance/chart/{sym}?range=1d&interval=5m", "chart-{sym}.json"),
+        ],
+    },
+    "nse-analyst": {
+        # Yahoo fundamentals-timeseries per symbol (timeseries-<SYMBOL>.json; HDFCBANK is a bank with no gross
+        # profit) and NSE's results-filed RSS (trimmed). universe.json (symbol -> company name, the file
+        # results.py reads for the RSS match) is written by hand, see tests/fixtures/nse-analyst.
+        "symbols": ["RELIANCE", "HDFCBANK"],
+        "per_symbol": True,
+        "files": [
+            (FUNDAMENTALS, "timeseries-{sym}.json"),
+            (NSE_FINANCIAL_RESULTS, "Financial_Results.xml"),
         ],
     },
     "nse-timemachine": {

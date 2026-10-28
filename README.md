@@ -208,7 +208,7 @@ nse-risk/        SKILL.md, check.py
 nse-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 nse-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
 nse-alerts/      SKILL.md, alerts.py, alerts.example.json
-nse-analyst/     SKILL.md, results.py, metrics.example.json
+nse-analyst/     SKILL.md, results.py
 nse-deals/      SKILL.md, deals.py
 tests/              unittest suite + offline fixtures
 ```
