@@ -1,49 +1,46 @@
 #!/usr/bin/env python3
-"""Congress trade tracker for trader-pelosi. Standard library only.
+"""Bulk, block and insider deals tracker for nse-deals. Standard library only.
 
-Reads the House Clerk's public financial disclosure index and the Periodic
-Transaction Reports (PTRs) members of the House file when they, their spouse
-or a dependent child buy or sell a stock.
+NSE publishes who trades big in a stock and who inside a company trades its shares:
 
-    python3 ptr.py index --member pelosi                 # this year's PTRs by a member
-    python3 ptr.py index --year 2026 --since 2026-10-01  # every PTR filed since a date
-    python3 ptr.py new --member pelosi                   # only what is new since last check
-    python3 ptr.py fetch 20035143                        # download one PTR and read it
-    python3 ptr.py parse ptr.txt --filed 2026-08-21      # rows from `pdftotext -layout` text
+    python3 deals.py today                          # new bulk + block deals, each shown once
+    python3 deals.py today --watch STLTECH,TCS      # only those symbols
+    python3 deals.py today --min-value-cr 5         # only deals worth 5 crore or more
+    python3 deals.py insider                        # new SEBI PIT insider disclosures
+    python3 deals.py client "serum institute"       # every deal by a client in your local history
 
-Where the data comes from:
-  - The index: https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<YEAR>FD.zip
-    (a ZIP with <YEAR>FD.xml: one <Member> per filing, FilingType P = PTR).
-  - Each PTR: https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/<YEAR>/<DocID>.pdf
-  - Reading a PDF needs `pdftotext` (poppler) if you want rows from this tool.
-    Without it, the tool prints the PDF path and Claude reads the PDF itself.
+Where the data comes from (public NSE files, no login):
+  - https://archives.nseindia.com/content/equities/bulk.csv   bulk deals (> 0.5% of equity), CURRENT day only
+  - https://archives.nseindia.com/content/equities/block.csv  block deals (window trades), CURRENT day only
+  - https://nsearchives.nseindia.com/content/RSS/Insider_Trading.xml  the latest PIT filings, each linking
+    an XBRL file that holds the per-person transactions.
+The bulk and block files are overwritten every day, so this tool keeps its own history in
+nse/state/deals.json (one row per fingerprint, with first_seen). `client` searches that history.
+The insider RSS feed can lag by months; when its newest item is over 7 days old the tool says so.
 
-What a PTR is, and is not:
-  - It is a PUBLIC disclosure under the STOCK Act, due within 30 days of the
-    member learning of the trade and never later than 45 days after it. So it
-    arrives days or weeks after the trade, and amounts are ranges, not prices.
-  - Reading them fast is not inside information. There is none here.
-  - This covers the House. Senate PTRs are on efdsearch.senate.gov behind an
-    agreement you must accept yourself; see SKILL.md for the manual route.
+These are public filings, not tips. Bulk and block deals are reported after the trade; PIT filings
+arrive up to two trading days after it. Not financial advice.
 
-State: `new` remembers which DocIDs it has shown in trader/state/pelosi.json,
-so each PTR alerts once. Offline: --offline FILE reads a saved <YEAR>FD.zip
-(or the .xml inside it) instead of the network. The tests use it.
+State: `today` and `insider` remember what they showed, so each row alerts once. Watch symbols come from
+--watch, plus nse/watchlist.json and nse/portfolio.json (rows in those get a star marker).
+Offline: --offline DIR reads bulk.csv, block.csv, Insider_Trading.xml and the IT_*.xml files in DIR.
 """
 
 import argparse
+import csv
 import datetime as _dt
+import gzip
+import hashlib
 import io
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-import zipfile
+from decimal import Decimal, InvalidOperation
 
 # --- nse common: begin ---
 # Shared by every tool and kept identical by tests/sync_common.py. Edit it in nse-exit/exit.py only.
@@ -243,120 +240,205 @@ def yahoo_quote(sym):
     return _urlparse.quote(yahoo_symbol(sym), safe="")
 # --- nse common: end ---
 
-INDEX_URL = "https://disclosures-clerk.house.gov/public_disc/financial-pdfs/%d%s.zip"
-PTR_URL = "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/%d/%s.pdf"
-FD_URL = "https://disclosures-clerk.house.gov/public_disc/financial-pdfs/%d/%s.pdf"
-UA = "day-trader-skill/2.0 (+https://github.com/Jakeschincariol/day-trader-skill)"
-FILING_TYPES = {
-    "P": "Periodic Transaction Report", "O": "Annual report", "A": "Amendment",
-    "C": "Candidate report", "X": "Extension", "T": "Termination report",
-    "W": "Waiver", "D": "Disclosure (new member or candidate)", "H": "New filer report",
-}
-TXN_TYPES = {"P": "purchase", "S": "sale", "S (partial)": "partial sale", "E": "exchange"}
-OWNERS = {"SP": "spouse", "JT": "joint", "DC": "dependent child", "": "self"}
-LATE_DAYS = 45
+BULK_URL = "https://archives.nseindia.com/content/equities/bulk.csv"
+BLOCK_URL = "https://archives.nseindia.com/content/equities/block.csv"
+RSS_URL = "https://nsearchives.nseindia.com/content/RSS/Insider_Trading.xml"
+UA = "Mozilla/5.0 (nse-day-trader-skill)"
+NSE_PAUSE = 0.25
+STALE_DAYS = 7
+FIRST_DAYS = 7
+STALE_HELP = "check nseindia.com > Corporate Filings > Insider Trading"
+MONTHS = {m: i + 1 for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])}
+STAR = "★ watching"
 
 
-class PtrError(Exception):
+class DealsError(Exception):
     pass
 
 
-# ---------------------------------------------------------------- the index
+# ---------------------------------------------------------------- fetching
 
-def iso(mdy):
-    """'8/21/2026' or '08/21/2026' -> '2026-08-21' (two-digit years -> 20xx)."""
-    m = re.match(r"^\s*(\d{1,2})/(\d{1,2})/(\d{2,4})\s*$", mdy or "")
-    if not m:
+class Fetcher(object):
+    def __init__(self, offline=None, pause=NSE_PAUSE):
+        self.offline = offline
+        self.pause = pause
+        self._last = 0.0
+
+    def get(self, url, name):
+        if self.offline:
+            path = os.path.join(self.offline, name)
+            if not os.path.isfile(path):
+                raise DealsError("offline: no file %s" % path)
+            with open(path, "rb") as fh:
+                return fh.read().decode("utf-8-sig", "replace")
+        gap = time.time() - self._last
+        if gap < self.pause:
+            time.sleep(self.pause - gap)
+        self._last = time.time()
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Encoding": "gzip"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    data = gzip.decompress(data)
+        except urllib.error.HTTPError as exc:
+            raise DealsError("%s: HTTP %s" % (url, exc.code))
+        except (urllib.error.URLError, OSError) as exc:
+            raise DealsError("%s: %s" % (url, getattr(exc, "reason", exc)))
+        finally:
+            self._last = time.time()
+        return data.decode("utf-8-sig", "replace")
+
+
+# ---------------------------------------------------------------- parsing
+
+def parse_date(text):
+    return _dt.date.fromisoformat(text)
+
+
+def _iso_nse_date(text):
+    """28-OCT-2026 -> 2026-10-28 ('' if it is not a date)."""
+    m = re.match(r"^\s*(\d{1,2})[-/ ]([A-Za-z]{3})[A-Za-z]*[-/ ](\d{4})\s*$", text or "")
+    if not m or m.group(2).upper() not in MONTHS:
+        return ""
+    return "%s-%02d-%02d" % (m.group(3), MONTHS[m.group(2).upper()], int(m.group(1)))
+
+
+def _num(text):
+    try:
+        return Decimal(str(text).strip().replace(",", ""))
+    except (InvalidOperation, ValueError):
         return None
-    month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    if year < 100:
-        year += 2000
+
+
+def parse_deals(csv_text, kind):
+    """NSE bulk.csv / block.csv text -> rows: date (ISO), symbol, name, client, side, qty, price, value_inr, kind.
+    value_inr is qty x price exactly. Rows that are blank or malformed are skipped."""
+    reader = csv.reader(io.StringIO(csv_text.lstrip("﻿")))
+    head = None
+    out = []
+    for rec in reader:
+        cells = [c.strip() for c in rec]
+        if head is None:
+            if cells and cells[0].lower() == "date":
+                head = [c.lower() for c in cells]
+            continue
+        if len(cells) < len(head) - 1 or not any(cells):
+            continue
+
+        def col(*names):
+            for i, h in enumerate(head):
+                if any(h.startswith(n) for n in names) and i < len(cells):
+                    return cells[i]
+            return ""
+        day = _iso_nse_date(col("date"))
+        sym = col("symbol").upper()
+        side = col("buy").upper()
+        qty, price = _num(col("quantity")), _num(col("trade price"))
+        if not (day and sym and side[:1] in ("B", "S") and qty is not None and price is not None):
+            continue
+        q = int(qty)
+        out.append({"date": day, "symbol": sym, "name": col("security"), "client": col("client"),
+                    "side": "BUY" if side[0] == "B" else "SELL", "qty": q, "price": price,
+                    "value_inr": Decimal(q) * price, "kind": kind})
+    return out
+
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _category(text):
+    low = (text or "").lower()
+    if "promoter" in low:
+        return "Promoter"
+    if "director" in low:
+        return "Director"
+    if "key managerial" in low or "kmp" in low:
+        return "KMP"
+    if "designated" in low:
+        return "Designated person"
+    if "relative" in low:
+        return "Immediate relative"
+    return (text or "").strip() or "Other"
+
+
+def _side(*texts):
+    for t in texts:
+        low = (t or "").lower()
+        if not low.strip():
+            continue
+        if any(w in low for w in ("pledge", "invoc", "revoc", "revoke")):
+            return "PLEDGE" if "pledge" in low else low.strip().upper()
+        if any(w in low for w in ("sell", "sale", "dispos")):
+            return "SELL"
+        if any(w in low for w in ("buy", "purchase", "acqui", "allot")):
+            return "BUY"
+    return ""
+
+
+def parse_pit_xbrl(xml):
+    """A SEBI PIT disclosure (NSE XBRL, namespaces vary so elements are matched by local name) -> one row per
+    transaction: symbol, company, person, category, side, qty, value_inr, from_date, to_date, mode."""
     try:
-        return _dt.date(year, month, day).isoformat()
-    except ValueError:
-        return None
-
-
-def download(url, timeout=60):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except urllib.error.HTTPError as exc:
-        raise PtrError("HTTP %s for %s" % (exc.code, url))
-    except urllib.error.URLError as exc:
-        raise PtrError("could not reach %s: %s" % (url, exc.reason))
-
-
-def read_index_bytes(data):
-    """Index XML bytes from the ZIP (or the XML itself)."""
-    if data[:2] == b"PK":
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            names = [n for n in z.namelist() if n.lower().endswith(".xml")]
-            if not names:
-                raise PtrError("no XML inside the ZIP (files: %s)" % ", ".join(z.namelist()))
-            return z.read(names[0])
-    return data
-
-
-def parse_index(xml_bytes, year):
-    """Every filing in a <YEAR>FD.xml as a dict, newest first."""
-    try:
-        root = ET.fromstring(xml_bytes)
+        root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
     except ET.ParseError as exc:
-        raise PtrError("index is not valid XML: %s" % exc)
-    out = []
-    for m in root.iter("Member"):
-        f = {c.tag: (c.text or "").strip() for c in m}
-        doc = f.get("DocID", "")
-        kind = f.get("FilingType", "")
-        y = int(f.get("Year") or year)
-        url = (PTR_URL if kind == "P" else FD_URL) % (y, doc)
-        name = " ".join(x for x in (f.get("Prefix"), f.get("First"), f.get("Last"),
-                                    f.get("Suffix")) if x)
-        out.append({"doc_id": doc, "type": kind, "type_name": FILING_TYPES.get(kind, kind),
-                    "last": f.get("Last", ""), "first": f.get("First", ""), "name": name,
-                    "district": f.get("StateDst", ""), "year": y,
-                    "filed": iso(f.get("FilingDate", "")), "url": url})
-    out.sort(key=lambda r: (r["filed"] or "", r["doc_id"]), reverse=True)
-    return out
-
-
-def load_index(year, offline=None):
-    if offline:
-        with open(offline, "rb") as fh:
-            data = fh.read()
-    else:
-        data = download(INDEX_URL % (year, "FD"))
-    return parse_index(read_index_bytes(data), year)
-
-
-def member_match(row, member):
-    """'pelosi', 'Nancy Pelosi' or 'Pelosi, Nancy' against an index row."""
-    member = (member or "").strip().lower()
-    if not member:
-        return True
-    if "," in member:
-        last, first = [x.strip() for x in member.split(",", 1)]
-    else:
-        parts = member.split()
-        last, first = parts[-1], " ".join(parts[:-1])
-    if row["last"].lower() != last:
-        return False
-    return not first or row["first"].lower().startswith(first)
-
-
-def select(rows, members=None, kind="P", since=None):
-    out = []
-    for r in rows:
-        if kind and r["type"] != kind:
+        raise DealsError("could not read the XBRL file: %s" % exc)
+    groups = {}
+    order = []
+    for el in root.iter():
+        if len(el) or el.text is None or not el.text.strip():
             continue
-        if members and not any(member_match(r, m) for m in members):
+        ctx = el.get("contextRef") or ""
+        if ctx not in groups:
+            groups[ctx] = {}
+            order.append(ctx)
+        groups[ctx].setdefault(_local(el.tag), el.text.strip())
+    head = {}
+    for ctx in order:
+        if "NameOfThePerson" not in groups[ctx]:
+            head.update(groups[ctx])
+    rows = []
+    for ctx in order:
+        g = groups[ctx]
+        if "NameOfThePerson" not in g:
             continue
-        if since and (r["filed"] or "") < since:
-            continue
-        out.append(r)
-    return out
+        qty = _num(g.get("SecuritiesAcquiredOrDisposedNumberOfSecurity"))
+        val = _num(g.get("SecuritiesAcquiredOrDisposedValueOfSecurity", g.get("ValueInAggregate")))
+        mode = g.get("ModeOfAcquisitionOrDisposal", "")
+        rows.append({
+            "symbol": (head.get("NSESymbol") or "").upper(),
+            "company": head.get("NameOfTheCompany", ""),
+            "person": g["NameOfThePerson"],
+            "category": _category(g.get("CategoryOfPerson")),
+            "side": _side(g.get("SecuritiesAcquiredOrDisposedTransactionType"), mode),
+            "qty": int(qty) if qty is not None else 0,
+            "value_inr": val if val is not None else Decimal(0),
+            "from_date": g.get("DateOfAllotmentAdviceOrAcquisitionOfSharesOrSaleOfSharesSpecifyFromDate", ""),
+            "to_date": g.get("DateOfAllotmentAdviceOrAcquisitionOfSharesOrSaleOfSharesSpecifyToDate", ""),
+            "mode": mode,
+        })
+    return rows
+
+
+def parse_insider_rss(xml):
+    """Insider_Trading.xml -> [{company, link, filed 'YYYY-MM-DDTHH:MM+05:30', type}], newest first as published."""
+    try:
+        root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
+    except ET.ParseError as exc:
+        raise DealsError("could not read the insider RSS feed: %s" % exc)
+    items = []
+    for it in root.iter("item"):
+        g = lambda t: (it.findtext(t) or "").strip()
+        filed = ""
+        m = re.match(r"^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2})", g("pubDate"))
+        if m and m.group(2).upper() in MONTHS:
+            filed = "%s-%02d-%02dT%02d:%s+05:30" % (m.group(3), MONTHS[m.group(2).upper()], int(m.group(1)),
+                                                    int(m.group(4)), m.group(5))
+        items.append({"company": g("title"), "link": g("link"), "filed": filed,
+                      "type": re.sub(r"^TYPE OF SECURITY\s*:\s*", "", g("description"))})
+    return items
 
 
 # ---------------------------------------------------------------- state
@@ -364,8 +446,12 @@ def select(rows, members=None, kind="P", since=None):
 def load_state(path):
     if path and os.path.isfile(path):
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    return {"seen": [], "last_check": None}
+            st = json.load(fh)
+        st.setdefault("seen", [])
+        st.setdefault("history", {})
+        st.setdefault("last_check", None)
+        return st
+    return {"seen": [], "history": {}, "last_check": None}
 
 
 def save_state(path, state):
@@ -373,391 +459,232 @@ def save_state(path, state):
     if folder:
         os.makedirs(folder, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, indent=2)
+        json.dump(state, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
 
 
-def new_since(rows, state, today, first_days=LATE_DAYS):
-    """Rows not seen before. On the first run: only those filed in the last
-    first_days days, so you are not flooded with the whole year."""
+def _plain(row):
+    return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in row.items()}
+
+
+def fingerprint(row):
+    """A stable id over every field of the row, so a row is shown once and a changed row is new."""
+    blob = json.dumps(_plain(row), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def new_since(rows, state, today, first_days=FIRST_DAYS):
+    """Rows not shown before. On the very first run only rows dated within first_days (None: all of them)."""
     seen = set(state.get("seen", []))
-    if state.get("last_check") is None:
+    fresh = [r for r in rows if fingerprint(r) not in seen]
+    if state.get("last_check") is None and first_days is not None:
         cutoff = (today - _dt.timedelta(days=first_days)).isoformat()
-        return [r for r in rows if (r["filed"] or "") >= cutoff]
-    return [r for r in rows if r["doc_id"] not in seen]
+        fresh = [r for r in fresh if (r.get("date") or r.get("to_date") or "9999") >= cutoff]
+    return fresh
 
 
-# ---------------------------------------------------------------- parsing a PTR
-
-TXN = re.compile(
-    r"^\s*(?:(?P<owner>SP|JT|DC)\s+)?(?P<asset>.*?)\s+(?P<type>S \(partial\)|P|S|E)\s+"
-    r"(?P<date>\d{2}/\d{2}/\d{4})\s+(?P<notified>\d{2}/\d{2}/\d{4})\s+(?P<amount>\S.*?)\s*$")
-LABELS = [
-    ("status", re.compile(r"^\s*F(?:ILING)?\s+S(?:TATUS)?\s*:\s*(.*)$", re.I)),
-    ("description", re.compile(r"^\s*D(?:ESCRIPTION)?\s*:\s*(.*)$", re.I)),
-    ("account", re.compile(r"^\s*S(?:UBHOLDING)?\s+O(?:F)?\s*:\s*(.*)$", re.I)),
-    ("location", re.compile(r"^\s*L(?:OCATION)?\s*:\s*(.*)$", re.I)),
-]
-# Column headers repeat at the top of every page, sometimes in the middle of a
-# row that continues on the next page: skip them without ending the row.
-PAGE_HEADER = re.compile(r"^\s*(ID\s+Owner\s+Asset|Type\s+Date\b|Type$|Date$|Gains >$|\$200\?$)",
-                         re.I)
-END = re.compile(r"^\s*(\* For the complete|I CERTIFY|Digitally Signed|Filing ID #)", re.I)
-AMOUNT = re.compile(r"\$([\d,]+)")
-OPTION = re.compile(r"([\d,]+)\s+(call|put)\s+options?\b.*?strike price of \$([\d,.]+)"
-                    r".*?expiration date of (\d{1,2}/\d{1,2}/\d{2,4})", re.I | re.S)
-SHARES = re.compile(r"(?:purchased|sold|bought)\s+([\d,]+)\s+shares", re.I)
+def remember(state, rows, shown, when):
+    """History keeps every fetched row (client search); `seen` only what was shown, so filtered rows come back."""
+    for r in rows:
+        fp = fingerprint(r)
+        if fp not in state["history"]:
+            d = _plain(r)
+            d["first_seen"] = when
+            state["history"][fp] = d
+    state["seen"] = sorted(set(state["seen"]) | {fingerprint(r) for r in shown})
+    state["last_check"] = when
 
 
-def _amount(text):
-    nums = [int(x.replace(",", "")) for x in AMOUNT.findall(text or "")]
-    low = nums[0] if nums else None
-    high = nums[1] if len(nums) > 1 else None
-    return low, high
+# ---------------------------------------------------------------- symbols to watch
+
+def _load_json(path):
+    if path and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except ValueError:
+            return None
+    return None
 
 
-def _finish(row, filed):
-    asset = " ".join(row.pop("_asset").split())
-    tick = re.findall(r"\(([A-Z][A-Z0-9.\-/]{0,9})\)", asset)
-    code = re.findall(r"\[([A-Z]{2})\]", asset)
-    row["ticker"] = tick[-1] if tick else None
-    row["asset_type"] = code[-1] if code else None
-    name = re.sub(r"\s*\[[A-Z]{2}\]", "", asset)
-    if tick:
-        name = re.sub(r"\s*\(%s\)" % re.escape(tick[-1]), "", name)
-    row["asset"] = name.strip(" -")
-    row["amount"] = " ".join(row["amount"].split())
-    row["amount_low"], row["amount_high"] = _amount(row["amount"])
-    row["description"] = " ".join(row.get("description", "").split()) or None
-    opt = OPTION.search(row["description"] or "")
-    if opt:
-        row["option"] = {"contracts": int(opt.group(1).replace(",", "")),
-                         "kind": opt.group(2).lower(),
-                         "strike": float(opt.group(3).replace(",", "")),
-                         "expires": iso(opt.group(4)),
-                         "exercised": bool(re.match(r"\s*exercised\b", row["description"], re.I))}
-    sh = SHARES.search(row["description"] or "")
-    if sh:
-        row["shares"] = int(sh.group(1).replace(",", ""))
-    if filed and row["date"]:
-        days = (_dt.date.fromisoformat(filed) - _dt.date.fromisoformat(row["date"])).days
-        row["days_to_disclose"] = days
-        row["late"] = days > LATE_DAYS
-    return row
+def file_symbols(watchlist, portfolio):
+    out = set()
+    for h in (_load_json(watchlist) or {}).get("symbols", []):
+        s = h.get("symbol") if isinstance(h, dict) else h
+        if s:
+            out.add(str(s).upper())
+    for p in (_load_json(portfolio) or {}).get("positions", []):
+        s = p.get("symbol") or p.get("ticker")
+        if s:
+            out.add(str(s).upper())
+    return out
 
 
-def parse_ptr_text(text, filed=None):
-    """Rows from `pdftotext -layout` output of a House PTR.
-
-    Returns {"name", "status", "district", "doc_id", "filed", "rows": [...]}.
-    Each row: owner, owner_name, asset, ticker, asset_type, type, type_name,
-    date, notified, amount, amount_low, amount_high, status, description,
-    account, option {contracts, kind, strike, expires}, shares,
-    days_to_disclose, late."""
-    head = {"name": None, "status": None, "district": None, "doc_id": None, "filed": filed}
-    rows, cur, mode = [], None, None
-    amount_open = False
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        s = line.strip()
-        m = re.match(r"^Name:\s+(.*)$", s)
-        if m and not head["name"]:
-            head["name"] = m.group(1).strip()
-            continue
-        m = re.match(r"^Status:\s+(.*)$", s)
-        if m and not head["status"]:
-            head["status"] = m.group(1).strip()
-            continue
-        m = re.match(r"^State/District:\s*(\S+)", s)
-        if m:
-            head["district"] = m.group(1)
-            continue
-        m = re.search(r"Filing ID #(\d+)", s)
-        if m:
-            head["doc_id"] = m.group(1)
-            continue
-        m = re.match(r"^Digitally Signed:.*?,\s*(\d{2}/\d{2}/\d{4})", s)
-        if m:
-            head["filed"] = head["filed"] or iso(m.group(1))
-            continue
-        t = TXN.match(line)
-        if t and iso(t.group("date")):
-            if cur:
-                rows.append(cur)
-            owner = t.group("owner") or ""
-            cur = {"owner": owner, "owner_name": OWNERS.get(owner, owner),
-                   "_asset": t.group("asset"), "type": t.group("type"),
-                   "type_name": TXN_TYPES.get(t.group("type"), t.group("type")),
-                   "date": iso(t.group("date")), "notified": iso(t.group("notified")),
-                   "amount": t.group("amount"), "status": None, "account": None}
-            amount_open = cur["amount"].endswith("-")
-            mode = "asset"
-            continue
-        if cur is None:
-            continue
-        if not s:
-            if mode in ("description", "asset"):
-                mode = "labels" if mode == "description" or "[" in cur["_asset"] else mode
-            continue
-        if PAGE_HEADER.match(s):
-            continue
-        if END.match(s):
-            mode = "labels"
-            continue
-        label = next(((k, rx.match(line)) for k, rx in LABELS if rx.match(line)), None)
-        if label:
-            key, lm = label
-            value = lm.group(1).strip()
-            if key == "description":
-                cur["description"] = value
-                mode = "description"
-            elif key in ("status", "account"):
-                cur[key] = value
-                mode = "labels"
-            else:
-                mode = "labels"
-            continue
-        if mode == "asset":
-            parts = re.split(r"\s{2,}", s)
-            if amount_open and re.fullmatch(r"\$[\d,]+", parts[-1]):
-                cur["amount"] += " " + parts.pop()
-                amount_open = False
-            if parts and parts[0]:
-                cur["_asset"] += " " + " ".join(parts)
-        elif mode == "description":
-            cur["description"] = cur.get("description", "") + " " + s
-    if cur:
-        rows.append(cur)
-    head["rows"] = [_finish(r, head["filed"]) for r in rows]
-    return head
-
-
-def pdf_to_text(pdf_path):
-    exe = shutil.which("pdftotext")
-    if not exe:
-        return None
-    try:
-        out = subprocess.run([exe, "-layout", pdf_path, "-"], capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.decode("utf-8", "replace") if out.returncode == 0 else None
+def watch_sets(args):
+    """(limit or None, marked): --watch SYM,... limits; a bare --watch limits to the files' symbols."""
+    files = file_symbols(args.watchlist, args.portfolio)
+    if args.watch is None:
+        return None, files
+    named = {s.strip().upper() for s in args.watch.split(",") if s.strip()}
+    return (named or files), files | named
 
 
 # ---------------------------------------------------------------- output
 
-def watchlist(args):
-    tickers = {t.upper() for t in (args.tickers or [])}
-    path = getattr(args, "portfolio", None)
-    if path and os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            for p in json.load(fh).get("positions", []):
-                if p.get("ticker"):
-                    tickers.add(p["ticker"].upper())
-    return tickers
+def money(x):
+    x = Decimal(x)
+    return crore(x) if x >= Decimal(1000000) else inr(x, 0)
 
 
-def describe(row):
-    bits = ["%s %s" % (row["owner_name"], row["type_name"])]
-    what = row["asset"]
-    if row.get("ticker"):
-        what += " (%s)" % row["ticker"]
-    if row.get("option"):
-        o = row["option"]
-        what += ": %s%d %s options, $%g strike, expires %s" % (
-            "exercised " if o.get("exercised") else "", o["contracts"], o["kind"],
-            o["strike"], o["expires"])
-    elif row.get("shares"):
-        what += ": %s shares" % "{:,}".format(row["shares"])
-    bits.append(what)
-    bits.append(row["amount"])
-    when = "traded %s" % row["date"]
-    if row.get("days_to_disclose") is not None:
-        when += ", disclosed %d days later%s" % (row["days_to_disclose"],
-                                                   " (LATE: over 45)" if row.get("late") else "")
-    bits.append(when)
-    if row.get("account"):
-        bits.append("account: %s" % row["account"])
-    return ", ".join(bits)
+def describe_deal(r, marked=()):
+    line = "%s  %-5s %-12s %s %s @ %s = %s  [%s]  %s" % (
+        r["date"], r["side"], r["symbol"], r["client"], "{:,}".format(r["qty"]), inr(r["price"]),
+        money(r["value_inr"]), r["kind"], r["name"])
+    return line + ("  " + STAR if r["symbol"] in marked else "")
 
 
-def render_report(report, watch=()):
-    out = ["%s (%s), %s. PTR %s, filed %s." % (
-        report.get("name") or "?", report.get("district") or "?", report.get("status") or "?",
-        report.get("doc_id") or "?", report.get("filed") or "?")]
-    for r in report["rows"]:
-        flag = "  <- %s is on your list" % r["ticker"] if r.get("ticker") in watch else ""
-        out.append("  - %s%s" % (describe(r), flag))
-        if r.get("description") and not r.get("option") and not r.get("shares"):
-            out.append("      %s" % r["description"])
-    if not report["rows"]:
-        out.append("  no transaction rows found: read the PDF directly")
-    out.append("Public disclosure under the STOCK Act, filed up to 45 days after the trade. "
-               "Amounts are ranges. Not inside information.")
-    return "\n".join(out) + "\n"
+def describe_insider(r, marked=()):
+    line = "%s  %-6s %-12s %s (%s) %s shares = %s, %s to %s, %s" % (
+        r.get("filed", "")[:10] or r.get("to_date", ""), r["side"] or "?", r["symbol"], r["person"], r["category"],
+        "{:,}".format(r["qty"]), money(r["value_inr"]), r["from_date"] or "?", r["to_date"] or "?", r["mode"] or "?")
+    return line + ("  " + STAR if r["symbol"] in marked else "")
 
 
-def render_index(rows):
-    out = []
-    for r in rows:
-        out.append("%s  %-28s %-5s %-4s doc %-9s %s" % (
-            r["filed"], r["name"][:28], r["district"], r["type"], r["doc_id"], r["url"]))
-    return "\n".join(out) + ("\n" if out else "")
+def describe_history(r):
+    if r.get("kind") == "insider":
+        return describe_insider(r) + "  [insider, first seen %s]" % r["first_seen"][:10]
+    d = dict(r, qty=int(r["qty"]), price=Decimal(r["price"]), value_inr=Decimal(r["value_inr"]))
+    return describe_deal(d) + "  [first seen %s]" % r["first_seen"][:10]
 
 
 # ---------------------------------------------------------------- CLI
 
 def _parser():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description="NSE bulk, block and insider deals tracker.")
     sub = ap.add_subparsers(dest="cmd")
-    year = _dt.date.today().year
 
-    def common(p):
-        p.add_argument("--year", type=int, default=year)
-        p.add_argument("--member", action="append",
-                       help="last name or 'First Last'; repeat for more members")
-        p.add_argument("--type", default="P", help="FilingType (default P = PTR; '' for all)")
-        p.add_argument("--since", help="only filings on or after YYYY-MM-DD")
-        p.add_argument("--offline", metavar="FILE", help="a saved <YEAR>FD.zip or .xml")
+    def common(p, watch=True):
+        p.add_argument("--state", default="nse/state/deals.json")
+        p.add_argument("--watchlist", default="nse/watchlist.json")
+        p.add_argument("--portfolio", default="nse/portfolio.json")
+        p.add_argument("--offline", metavar="DIR", help="read bulk.csv, block.csv, Insider_Trading.xml, IT_*.xml here")
+        p.add_argument("--now", help='IST clock for tests, e.g. "2026-10-29 10:15"')
+        p.add_argument("--dry-run", action="store_true", help="do not remember what was shown")
         p.add_argument("--json", action="store_true")
-
-    p = sub.add_parser("index", help="list filings from the yearly index")
-    common(p)
-    p.add_argument("--limit", type=int, default=50)
-
-    p = sub.add_parser("new", help="filings not seen at the last check")
-    common(p)
-    p.add_argument("--state", default="trader/state/pelosi.json")
-    p.add_argument("--today", help="YYYY-MM-DD, for reproducible runs")
-    p.add_argument("--dry-run", action="store_true", help="do not update the state file")
-    p.add_argument("--read", action="store_true",
-                   help="also download and read each new PTR (needs pdftotext)")
-    p.add_argument("--pdf-dir", default="trader/state/ptr-pdfs")
-    p.add_argument("--tickers", nargs="*", help="flag trades in these tickers")
-    p.add_argument("--portfolio", default="trader/portfolio.json")
-
-    p = sub.add_parser("fetch", help="download one PTR PDF and read it")
-    p.add_argument("doc_id")
-    p.add_argument("--year", type=int, default=year)
-    p.add_argument("--filed", help="filing date YYYY-MM-DD if known")
-    p.add_argument("--pdf-dir", default="trader/state/ptr-pdfs")
-    p.add_argument("--tickers", nargs="*")
-    p.add_argument("--portfolio", default="trader/portfolio.json")
-    p.add_argument("--json", action="store_true")
-
-    p = sub.add_parser("parse", help="rows from pdftotext -layout text of a PTR")
-    p.add_argument("text_file")
-    p.add_argument("--filed", help="filing date YYYY-MM-DD (else read from the signature)")
-    p.add_argument("--tickers", nargs="*")
-    p.add_argument("--portfolio", default="trader/portfolio.json")
-    p.add_argument("--json", action="store_true")
+        if watch:
+            p.add_argument("--watch", nargs="?", const="", default=None, metavar="SYM,...",
+                           help="only these symbols (bare --watch: your watchlist and portfolio)")
+    t = sub.add_parser("today", help="new bulk and block deals")
+    common(t)
+    t.add_argument("--min-value-cr", type=Decimal, default=Decimal(0), help="hide deals below this many crore")
+    i = sub.add_parser("insider", help="new SEBI PIT insider disclosures")
+    common(i)
+    i.add_argument("--limit", type=int, default=20, help="newest RSS items to open")
+    c = sub.add_parser("client", help="every deal by a client or insider in your local history")
+    c.add_argument("name")
+    c.add_argument("--state", default="nse/state/deals.json")
+    c.add_argument("--json", action="store_true")
     return ap
 
 
-def _fetch_and_read(doc_id, year, pdf_dir, filed=None):
-    os.makedirs(pdf_dir, exist_ok=True)
-    path = os.path.join(pdf_dir, "%s.pdf" % doc_id)
-    if not os.path.isfile(path):
-        data = download(PTR_URL % (year, doc_id))
-        if not data.startswith(b"%PDF"):
-            raise PtrError("doc %s did not come back as a PDF" % doc_id)
-        with open(path, "wb") as fh:
-            fh.write(data)
-    text = pdf_to_text(path)
-    if text is None:
-        return path, None
-    report = parse_ptr_text(text, filed=filed)
-    report["pdf"] = path
-    report["url"] = PTR_URL % (year, doc_id)
-    return path, report
-
-
 def main(argv=None):
-    args = _parser().parse_args(argv)
+    ap = _parser()
+    args = ap.parse_args(argv)
     if not args.cmd:
-        _parser().print_help()
+        ap.print_help()
         return 2
     try:
         return _run(args)
-    except (PtrError, OSError) as exc:
-        print("ptr: %s" % exc, file=sys.stderr)
+    except (DealsError, ValueError, OSError) as exc:
+        print("deals: %s" % exc, file=sys.stderr)
         return 2
 
 
-def _run(args):
-    if args.cmd == "parse":
-        with open(args.text_file, encoding="utf-8", errors="replace") as fh:
-            report = parse_ptr_text(fh.read(), filed=args.filed)
-        if args.json:
-            print(json.dumps(report, indent=2))
-        else:
-            sys.stdout.write(render_report(report, watchlist(args)))
-        return 0 if report["rows"] else 1
-
-    if args.cmd == "fetch":
-        path, report = _fetch_and_read(args.doc_id, args.year, args.pdf_dir, args.filed)
-        if report is None:
-            print("Saved %s. pdftotext is not installed, so read the PDF directly "
-                  "(Claude can open it), or install poppler (brew install poppler)." % path)
-            return 0
-        if args.json:
-            print(json.dumps(report, indent=2))
-        else:
-            sys.stdout.write(render_report(report, watchlist(args)))
-        return 0 if report["rows"] else 1
-
-    rows = load_index(args.year, args.offline)
-    if args.cmd == "new" and not args.offline:
-        today = _dt.date.fromisoformat(args.today) if args.today else _dt.date.today()
-        if today.month == 1 and args.year == today.year:
-            try:
-                rows += load_index(args.year - 1)
-            except PtrError:
-                pass
-    picked = select(rows, args.member, args.type or None, args.since)
-
-    if args.cmd == "index":
-        picked = picked[:args.limit]
-        if args.json:
-            print(json.dumps(picked, indent=2))
-        else:
-            sys.stdout.write(render_index(picked))
-            if not picked:
-                print("No matching filings in the %d index." % args.year)
-        return 0 if picked else 1
-
-    # new
-    today = _dt.date.fromisoformat(args.today) if args.today else _dt.date.today()
-    state = load_state(args.state)
-    fresh = new_since(picked, state, today)
-    watch = watchlist(args)
-    reports = []
-    if args.read:
-        for r in fresh:
-            if r["type"] != "P":
-                continue
-            path, report = _fetch_and_read(r["doc_id"], r["year"], args.pdf_dir, r["filed"])
-            reports.append({"filing": r, "pdf": path, "report": report})
-    if args.json:
-        print(json.dumps({"new": fresh, "reports": reports}, indent=2))
-    else:
-        if not fresh:
-            print("Nothing new since %s." % (state.get("last_check") or "the last check"))
-        for r in fresh:
-            print("NEW %s: %s (%s) filed %s, doc %s" % (
-                r["type_name"], r["name"], r["district"], r["filed"], r["doc_id"]))
-            print("    %s" % r["url"])
-        for rep in reports:
-            if rep["report"] is None:
-                print("    read %s (pdftotext not installed)" % rep["pdf"])
-            else:
-                sys.stdout.write(render_report(rep["report"], watch))
+def _finish(args, state, rows, shown, now):
     if not args.dry_run:
-        seen = set(state.get("seen", []))
-        seen.update(r["doc_id"] for r in picked)
-        state["seen"] = sorted(seen)
-        state["last_check"] = _dt.datetime.now().replace(microsecond=0).isoformat()
+        remember(state, rows, shown, now.isoformat(timespec="minutes"))
         save_state(args.state, state)
-    return 0 if fresh else 1
+
+
+def _run(args):
+    if args.cmd == "client":
+        needle = args.name.strip().lower()
+        state = load_state(args.state)
+        hits = [r for r in state["history"].values()
+                if needle in (r.get("client") or r.get("person") or "").lower()]
+        hits.sort(key=lambda r: (r.get("date") or r.get("to_date") or "", r["first_seen"]), reverse=True)
+        if args.json:
+            print(json.dumps(hits, indent=2, ensure_ascii=False))
+        elif not hits:
+            print('No deals by "%s" in your history (%s). History starts the first time you run `today` or `insider`.'
+                  % (args.name, args.state))
+        else:
+            for r in hits:
+                print(describe_history(r))
+        return 0 if hits else 1
+
+    now = to_ist(parse_now(args.now))
+    today = now.date()
+    fetcher = Fetcher(offline=args.offline)
+    state = load_state(args.state)
+    limit, marked = watch_sets(args)
+
+    if args.cmd == "today":
+        ok, why = trading_day(today)
+        if not ok:
+            print("no deals: market closed (%s). NSE publishes bulk and block deals for trading days only." % why)
+            return 0
+        rows = []
+        for url, name, kind in ((BULK_URL, "bulk.csv", "bulk"), (BLOCK_URL, "block.csv", "block")):
+            try:
+                rows += parse_deals(fetcher.get(url, name), kind)
+            except DealsError as exc:
+                print("deals: %s: skipped (%s)" % (kind, exc), file=sys.stderr)
+        fresh = new_since(rows, state, today)
+        shown = [r for r in fresh
+                 if (limit is None or r["symbol"] in limit)
+                 and r["value_inr"] >= args.min_value_cr * Decimal(10000000)]
+        shown.sort(key=lambda r: (r["date"], r["value_inr"]), reverse=True)
+        if args.json:
+            print(json.dumps({"new": [_plain(r) for r in shown]}, indent=2, ensure_ascii=False))
+        elif not shown:
+            print("Today: nothing new, no bulk or block deals you have not seen (%d fetched)." % len(rows))
+        else:
+            print("New deals (%d of %d fetched; public filings, not tips):" % (len(shown), len(rows)))
+            for r in shown:
+                print(describe_deal(r, marked))
+        _finish(args, state, rows, shown, now)
+        return 0
+
+    # insider
+    items = parse_insider_rss(fetcher.get(RSS_URL, "Insider_Trading.xml"))
+    stamps = [it["filed"] for it in items if it["filed"]]
+    if stamps:
+        latest = max(stamps)[:10]
+        if (today - parse_date(latest)).days > STALE_DAYS:
+            print("NSE's insider-trading feed looks stale (latest %s); %s" % (latest, STALE_HELP))
+    rows = []
+    for it in items[:max(0, args.limit)]:
+        name = it["link"].rsplit("/", 1)[-1]
+        try:
+            for r in parse_pit_xbrl(fetcher.get(it["link"], name)):
+                r.update({"kind": "insider", "filed": it["filed"], "source": name})
+                rows.append(r)
+        except DealsError as exc:
+            print("deals: %s: skipped (%s)" % (name, exc), file=sys.stderr)
+    fresh = new_since(rows, state, today, first_days=None)
+    shown = [r for r in fresh if limit is None or r["symbol"] in limit]
+    shown.sort(key=lambda r: (r["filed"], r["value_inr"]), reverse=True)
+    if args.json:
+        print(json.dumps({"new": [_plain(r) for r in shown]}, indent=2, ensure_ascii=False))
+    elif not shown:
+        print("Insider: nothing new, no insider disclosures you have not seen (%d read)." % len(rows))
+    else:
+        print("New insider disclosures (%d; SEBI PIT filings, public, not tips):" % len(shown))
+        for r in shown:
+            print(describe_insider(r, marked))
+    _finish(args, state, rows, shown, now)
+    return 0
 
 
 if __name__ == "__main__":

@@ -48,6 +48,9 @@ NSE_FINANCIAL_RESULTS = "https://nsearchives.nseindia.com/content/RSS/Financial_
 FUNDAMENTALS = ("https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{sym}"
                 "?type=quarterlyTotalRevenue,quarterlyGrossProfit,quarterlyOperatingIncome,quarterlyNetIncome,"
                 "quarterlyDilutedEPS&period1=1640995200&period2={p2}")
+NSE_BULK = "https://archives.nseindia.com/content/equities/bulk.csv"
+NSE_BLOCK = "https://archives.nseindia.com/content/equities/block.csv"
+NSE_INSIDER = "https://nsearchives.nseindia.com/content/RSS/Insider_Trading.xml"
 NSE_HOLIDAY_MASTER = "https://www.nseindia.com/api/holiday-master?type=trading"
 
 # Liquid names kept in the trimmed EQUITY_L.csv (plus M&M, BAJAJ-AUTO and two BE rows, see trim_equity_l).
@@ -68,6 +71,17 @@ RISK_KEEP = [
 DEMO_SEC_ROW = 'DEMO,EQ,DEMO SYNTHETIC TEST STOCK,20,"-"'
 
 REGISTRY = {
+    "nse-deals": {
+        # bulk.csv and block.csv hold the CURRENT day only (capture on the day you want, after the close), and
+        # the insider RSS feed; "extra" then fetches the PIT XBRL file behind the first RSS items (IT_*.xml).
+        # If a live file no longer holds the rows the tests assert, hand-build it in the exact live format.
+        "files": [
+            (NSE_BULK, "bulk.csv"),
+            (NSE_BLOCK, "block.csv"),
+            (NSE_INSIDER, "Insider_Trading.xml"),
+        ],
+        "extra": "deals_pit_files",
+    },
     "nse-scanner": {
         "files": [
             (NSE_EQUITY_L, "EQUITY_L.csv"),
@@ -330,6 +344,20 @@ EXPECTED = {"nse-scanner": scanner_expected, "nse-entry": entry_expected, "nse-t
 
 # ---------------------------------------------------------------- driver
 
+def deals_pit_files(outdir, pause, count=3):
+    """Fetch the XBRL file behind the first `count` distinct links of the saved Insider_Trading.xml."""
+    import re
+    with open(os.path.join(outdir, "Insider_Trading.xml"), encoding="utf-8") as fh:
+        links = re.findall(r"<link>(https://[^<]*/IT_[^<]*\.xml)</link>", fh.read())
+    done = []
+    for link in list(dict.fromkeys(links))[:count]:
+        done.append(write_fixture(outdir, link.rsplit("/", 1)[-1], get(link, pause)))
+    return done
+
+
+EXTRAS = {"deals_pit_files": deals_pit_files}
+
+
 def write_fixture(outdir, name, text):
     path = os.path.join(outdir, name)
     data = text.encode("utf-8")
@@ -393,6 +421,8 @@ def capture(skill, day, outdir, pause):
         elif "daily-" in name:
             body = trim_to_day(body, day, keep_before=True)
         written.append(write_fixture(outdir, name, json.dumps(body, separators=(",", ":"))))
+    if spec.get("extra"):
+        written.extend(EXTRAS[spec["extra"]](outdir, pause))
     fn = EXPECTED.get(skill)
     if fn:
         exp = fn(day, outdir)
