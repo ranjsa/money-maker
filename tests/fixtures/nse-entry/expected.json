@@ -1,0 +1,21 @@
+{
+  "symbol": "RELIANCE",
+  "day": "2026-10-27",
+  "captured_at": "2026-10-28T22:16:00+05:30",
+  "checks": {
+    "10:15": {
+      "status": "waiting",
+      "level": 1197.0,
+      "trigger_time": null,
+      "trigger_price": null
+    },
+    "15:30": {
+      "status": "triggered",
+      "level": 1197.0,
+      "trigger_time": "12:40 PM",
+      "trigger_price": 1197.2
+    }
+  },
+  "or_high": 1197.0,
+  "or_low": 1189.7
+}

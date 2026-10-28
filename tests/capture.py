@@ -57,6 +57,14 @@ REGISTRY = {
             (YAHOO + "/v7/finance/spark?symbols={symbols}&range=3mo&interval=1d", "daily-spark-{day}.json"),
         ],
     },
+    "nse-entry": {
+        # one liquid name, one session: a plain Yahoo chart JSON, the file entry.py --offline reads
+        "symbols": ["RELIANCE"],
+        "single": True,
+        "files": [
+            (YAHOO + "/v8/finance/chart/{sym}?period1={p1}&period2={p2}&interval=5m", "RELIANCE-5m-{day}.json"),
+        ],
+    },
 }
 
 
@@ -163,7 +171,25 @@ def scanner_expected(day, outdir):
     return exp
 
 
-EXPECTED = {"nse-scanner": scanner_expected}
+def entry_expected(day, outdir):
+    """Run entry.py on the RELIANCE session just written; record what it says at 10:15 and at the close."""
+    tool = os.path.join(ROOT, "nse-entry", "entry.py")
+    chart = os.path.join(outdir, "RELIANCE-5m-%s.json" % day)
+    exp = {"symbol": "RELIANCE", "day": day.isoformat(),
+           "captured_at": datetime.datetime.now(IST).isoformat(timespec="seconds"), "checks": {}}
+    for when in ("10:15", "15:30"):
+        r = subprocess.run([sys.executable, tool, "check", "RELIANCE", "--offline", chart, "--now",
+                            "%s %s" % (day, when), "--json"], capture_output=True, text=True)
+        res = json.loads(r.stdout)
+        t = res.get("trigger") or {}
+        exp["or_high"] = res["opening_range"]["high"]
+        exp["or_low"] = res["opening_range"]["low"]
+        exp["checks"][when] = {"status": res["status"], "level": res["level"],
+                               "trigger_time": t.get("time"), "trigger_price": t.get("price")}
+    return exp
+
+
+EXPECTED = {"nse-scanner": scanner_expected, "nse-entry": entry_expected}
 
 
 # ---------------------------------------------------------------- driver
@@ -188,7 +214,7 @@ def capture(skill, day, outdir, pause):
     spec = REGISTRY[skill]
     os.makedirs(outdir, exist_ok=True)
     p1, p2 = day_bounds(day)
-    symbols = []
+    symbols = list(spec.get("symbols", []))
     written = []
     for template, fname in spec["files"]:
         name = fname.format(day=day.isoformat())
@@ -207,6 +233,8 @@ def capture(skill, day, outdir, pause):
                     body[s] = json.loads(get(url.replace("{sym}", quote(s)), pause))
                 except Exception as e:  # a symbol Yahoo does not know: leave it out, say so
                     print("capture: %s: %s" % (s, e), file=sys.stderr)
+            if spec.get("single") and len(body) == 1:
+                body = next(iter(body.values()))
         else:
             text = get(url, pause)
             if name == "EQUITY_L.csv":
