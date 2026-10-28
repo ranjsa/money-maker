@@ -1,0 +1,33 @@
+{
+  "created_by": "nse-exit",
+  "symbol": "RELIANCE",
+  "side": "buy",
+  "date": "2026-10-27",
+  "setup": "orb",
+  "entry": 1197.2,
+  "entry_time": "12:40 PM",
+  "entry_bar": 40,
+  "interval": "5m",
+  "opening_range": {
+    "high": 1197.0,
+    "low": 1189.7,
+    "minutes": 15
+  },
+  "stop": 1193.3,
+  "stop_rule": "or_mid",
+  "stop_label": "opening-range midpoint",
+  "target": 1205.0,
+  "target_r": 2.0,
+  "target_label": "2R (two times the risk)",
+  "risk_per_share": 3.9,
+  "reward_risk": 2.0,
+  "flat_by": "15:10",
+  "tick": "0.10",
+  "est_charges_per_share": 0.9,
+  "net_reward_risk": 1.44,
+  "exchange": "NSE",
+  "product": "MIS",
+  "stop_detail": "(\u20b91,197.00 + \u20b91,189.70) / 2 = \u20b91,193.35, rounded down to the 0.10 tick",
+  "created_at": "2026-10-28T16:58:07Z",
+  "note": "A stop is a plan, not a guarantee: a gap or a fast market can fill past it."
+}

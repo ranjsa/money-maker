@@ -65,6 +65,15 @@ REGISTRY = {
             (YAHOO + "/v8/finance/chart/{sym}?period1={p1}&period2={p2}&interval=5m", "RELIANCE-5m-{day}.json"),
         ],
     },
+    "nse-timemachine": {
+        # 60 days of 5-minute bars for one liquid name, the file timemachine.py --offline reads
+        # (gzipped, over 200 KB). plan-RELIANCE.json is built by hand from a real session in that data.
+        "symbols": ["RELIANCE"],
+        "single": True,
+        "files": [
+            (YAHOO + "/v8/finance/chart/{sym}?range=60d&interval=5m", "RELIANCE-60d5m.json"),
+        ],
+    },
 }
 
 
@@ -189,7 +198,40 @@ def entry_expected(day, outdir):
     return exp
 
 
-EXPECTED = {"nse-scanner": scanner_expected, "nse-entry": entry_expected}
+TM_SEED = 19
+
+
+def timemachine_expected(day, outdir):
+    """Run timemachine.py (seed 19) on the plan-RELIANCE.json fixture and the 60-day bars just written."""
+    tool = os.path.join(ROOT, "nse-timemachine", "timemachine.py")
+    plan = os.path.join(outdir, "plan-RELIANCE.json")
+    chart = os.path.join(outdir, "RELIANCE-60d5m.json")
+    if not os.path.exists(chart):
+        chart += ".gz"
+    if not os.path.exists(plan):
+        print("capture: no plan-RELIANCE.json in %s yet: build it from the data, then re-run" % outdir, file=sys.stderr)
+        return {"symbol": "RELIANCE", "day": day.isoformat()}
+    with open(plan, encoding="utf-8") as fh:
+        pdate = json.load(fh)["date"]
+    r = subprocess.run([sys.executable, tool, "run", "--plan", plan, "--offline", chart, "--now", "%s 23:00" % pdate,
+                        "--seed", str(TM_SEED), "--json"], capture_output=True, text=True)
+    doc = json.loads(r.stdout)
+    mc, h = doc["mc"], doc["history"]
+    return {"symbol": "RELIANCE", "day": day.isoformat(),
+            "captured_at": datetime.datetime.now(IST).isoformat(timespec="seconds"),
+            "plan_date": pdate, "now": "%s 23:00" % pdate, "seed": TM_SEED, "replays": mc["replays"],
+            "pool_sessions": mc["pool_sessions"], "pool_from": mc["pool_from"], "pool_to": mc["pool_to"],
+            "bars_left": mc["bars_left"], "until": mc["until"],
+            "p_target": mc["p_target"], "p_stop": mc["p_stop"], "p_neither": mc["p_neither"],
+            "p_green": mc["p_green"], "median_close": mc["median_close"], "p5_close": mc["p5_close"],
+            "p95_close": mc["p95_close"], "avg_R": mc["avg_R"], "avg_r_net": mc["avg_r_net"],
+            "history": {"sessions": h["sessions"], "triggered": h["triggered"], "target": h["target"],
+                        "stop": h["stop"], "close": h["close"], "avg_R": h["avg_R"], "avg_r_net": h["avg_r_net"]},
+            "excluded_sessions": doc["data"]["short_sessions_left_out"],
+            "verdict": doc["verdict"]}
+
+
+EXPECTED = {"nse-scanner": scanner_expected, "nse-entry": entry_expected, "nse-timemachine": timemachine_expected}
 
 
 # ---------------------------------------------------------------- driver
