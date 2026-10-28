@@ -25,7 +25,7 @@ A port of [Jake Schincariol's day-trader-skill](https://github.com/Jakeschincari
 Paste this into Claude:
 
 ```
-https://github.com/tusharjha/nse-day-trader-skill
+https://github.com/ranjsa/money-maker
 
 install skill
 ```
@@ -33,7 +33,7 @@ install skill
 Or as a plugin, in Claude Code:
 
 ```
-/plugin marketplace add tusharjha/nse-day-trader-skill
+/plugin marketplace add ranjsa/money-maker
 /plugin install nse-day-trader-skill@nse-day-trader-skill
 ```
 
@@ -42,8 +42,8 @@ Claude Code namespaces plugin skills, so installed as a plugin they show up as
 plain `/nse-scanner`:
 
 ```bash
-git clone https://github.com/tusharjha/nse-day-trader-skill.git
-cp -r nse-day-trader-skill/nse-* ~/.claude/skills/
+git clone https://github.com/ranjsa/money-maker.git
+cp -r money-maker/nse-* ~/.claude/skills/
 ```
 
 Project-local instead of global: copy the same folders into your repo's

@@ -75,8 +75,8 @@ class Repo(unittest.TestCase):
             readme = " ".join(fh.read().split())
         self.assertTrue(readme.startswith("# The NSE Day Trader skill"))
         for line in (ABOUT,
-                     "https://github.com/tusharjha/nse-day-trader-skill install skill",
-                     "/plugin marketplace add tusharjha/nse-day-trader-skill",
+                     "https://github.com/ranjsa/money-maker install skill",
+                     "/plugin marketplace add ranjsa/money-maker",
                      "/plugin install nse-day-trader-skill@nse-day-trader-skill",
                      "## Fine print",
                      "71 % (7 in 10) of individual intraday traders", "PR 13/2024", "PR 37/2024",
