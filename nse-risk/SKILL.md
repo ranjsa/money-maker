@@ -55,7 +55,9 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-27 10:15"    # pin the clo
 
 `--refresh-bands` fetches `https://nsearchives.nseindia.com/content/equities/sec_list.csv`
 (`--offline DIR` reads `DIR/sec_list.csv` instead). Bands change, so refresh
-once a trading day; an older file is used with a warning.
+once a trading day. If the bands are missing or older than today and a group
+is an entry, the check tries one live refresh itself (never with `--offline`);
+if that fails, entries are blocked (circuit) until you run `--refresh-bands`.
 
 ## Entries and exits
 
@@ -76,10 +78,10 @@ batch that is fine group by group but breaks a limit together is caught.
 | --- | --- |
 | format | no legs; legs on different symbols or exchanges; a side that is not BUY or SELL; a quantity that is not a whole number; an unknown `order_type`, `variety` or `validity`; a LIMIT or SL leg with no `price`; an SL or SL-M leg with no `trigger_price` |
 | fno | a leg on NFO or BFO while `allow_fno` is false |
-| series | the stock is not in the EQ series (BE and BZ are trade-to-trade, SM / ST are SME: no intraday). From the band file, else `nse/universe.json`; a stock neither lists is a warning, "series unknown" |
+| series | the stock is not in the EQ series (BE and BZ are trade-to-trade, SM / ST are SME: no intraday). From the band file, else `nse/universe.json`; a stock in neither is blocked, "not in the EQ universe" (a warning for an exit). Only with neither file loaded is it a warning, "series unknown" |
 | short | a sell of more than you hold (`allow_short` false) |
 | legs | (entries) no stop leg while `require_stop` is true; legs with different quantities; a stop leg that is not SL-M or SL; a product other than MIS; an exchange other than NSE or BSE; a stop trigger at or above the entry; a target at or below the entry |
-| circuit | (entries) the entry within 3 ticks of the upper band, previous close x (1 + band%); a stock with a 2% or 5% band unless `allow_banded` is true. No previous close or no band for the stock is a warning. F&O stocks have no fixed band |
+| circuit | (entries) the entry within 3 ticks of the upper band, previous close x (1 + band%); a stock with a 2% or 5% band unless `allow_banded` is true; price bands missing or older than today; no previous close dated today in `nse/prices.json` (run `nse-alerts/alerts.py quote SYM --write`). A stock missing from a fresh band file is a warning. F&O stocks have no fixed band |
 | blocked | (entries) the symbol is on the `blocked` list |
 | size | (entries) under `min_order_inr` or over `max_order_inr` |
 | position | (entries) the stock would be over `max_position_pct` of the account |
@@ -120,15 +122,16 @@ How the numbers work:
 
 Warnings do not block, but say them to the user: a LIVE account, a stop that
 lives only in the plan and not at the broker, a price too old to use, no
-previous close or band for the circuit check, a series nobody lists, a price
-off the tick, bands older than today.
+band for a stock in a fresh band file, a series when neither list is loaded,
+a price off the tick.
 
 ## Steps
 
 1. Once a trading day, refresh the bands: `check.py --refresh-bands`.
 2. If the price may have moved since the plan, refresh it first
    (nse-alerts: `alerts.py quote DEMO --write`). The circuit check reads the
-   previous close from `detail.DEMO.prev_close` in `nse/prices.json`.
+   previous close from `detail.DEMO.prev_close` in `nse/prices.json`, and only
+   if that quote's time (`detail.DEMO.time`, else the file's `as_of`) is today.
 3. Run `check.py`. Exit code 0 means every group passed, 1 means at least one
    was blocked.
 4. Tell the user the result in plain words, group by group: the max loss at

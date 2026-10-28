@@ -228,11 +228,22 @@ class SeriesAndCircuit(unittest.TestCase):
         o = rename(demo(), "NEWCO")
         res = run(o, prev_close={"NEWCO": 1000.0}, universe=["NEWCO", "RELIANCE"])
         self.assertNotIn("series", warnings(res) + reasons(res))
+        # a symbol in neither loaded list is blocked
         res = run(o, prev_close={"NEWCO": 1000.0})
-        self.assertEqual(verdicts(res), ["PASS"])
-        self.assertIn("series unknown", warnings(res))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("series: NEWCO is not in the EQ universe; refresh bands or universe", reasons(res))
         res = run(o, bands=None, prev_close={"NEWCO": 1000.0}, universe=["RELIANCE"])
+        self.assertIn("series: NEWCO is not in the EQ universe; refresh bands or universe", reasons(res))
+
+    def test_a_be_stock_with_no_bands_is_blocked_by_the_universe(self):
+        res = run(rename(demo(), "ABAN"), bands=None, prev_close={"ABAN": 1000.0}, universe=["DEMO", "RELIANCE"])
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("series: ABAN is not in the EQ universe; refresh bands or universe", reasons(res))
+
+    def test_series_is_only_a_warning_when_neither_list_is_loaded(self):
+        res = run(rename(demo(), "NEWCO"), bands=None, prev_close={"NEWCO": 1000.0})
         self.assertIn("series unknown", warnings(res))
+        self.assertNotIn("series", reasons(res))
 
     def test_an_entry_within_three_ticks_of_the_upper_band(self):
         # 846 x 1.20 = 1015.20; three ticks of 0.10 below it is 1014.90; the entry 1015 is at or above it
@@ -253,17 +264,42 @@ class SeriesAndCircuit(unittest.TestCase):
         res = run(o, cfg(allow_banded=True), prev_close={"21STCENMGM": 980.0})
         self.assertEqual(verdicts(res), ["PASS"], reasons(res))
 
-    def test_missing_band_data_warns(self):
+    def test_no_previous_close_blocks_an_entry(self):
         res = run(demo(), prev_close={})
-        self.assertEqual(verdicts(res), ["PASS"])
-        self.assertIn("circuit: no previous close for DEMO", warnings(res))
-        res = run(rename(demo(), "RELIANCE"), prev_close={"RELIANCE": 1000.0})
-        self.assertEqual(verdicts(res), ["PASS"])
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("circuit: no previous close from today for DEMO", reasons(res))
+        self.assertIn("nse-alerts/alerts.py quote DEMO", reasons(res))
+        res = run(demo(), prev_close=None)
+        self.assertIn("nse-alerts/alerts.py quote DEMO", reasons(res))
+        res = run(rename(demo(), "RELIANCE"), prev_close={})
+        self.assertEqual(verdicts(res), ["PASS"], reasons(res))   # no fixed band: nothing to compare against
         self.assertEqual(res["results"][0]["warnings"], [])
         self.assertIn("no fixed price band", " ".join(res["results"][0]["info"]))
+
+    def test_missing_or_stale_bands_block_an_entry(self):
         res = run(demo(), bands=None)
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("circuit: NSE price bands are not loaded", reasons(res))
+        self.assertIn("run check.py --refresh-bands", reasons(res))
+        res = run(demo(), bands_as_of="2026-10-26")
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("circuit: the NSE price bands are from 2026-10-26, before today (2026-10-27): run check.py "
+                      "--refresh-bands", reasons(res))
+        for fresh in (TODAY, "2026-10-28", None):
+            self.assertEqual(verdicts(run(demo(), bands_as_of=fresh)), ["PASS"], fresh)
+
+    def test_a_symbol_missing_from_fresh_bands_is_a_warning(self):
+        res = run(rename(demo(), "NEWCO"), prev_close={"NEWCO": 1000.0}, universe=["NEWCO"], bands_as_of=TODAY)
         self.assertEqual(verdicts(res), ["PASS"])
-        self.assertIn("circuit: no price band for DEMO", warnings(res))
+        self.assertIn("circuit: no price band for NEWCO", warnings(res))
+
+    def test_an_exit_is_never_blocked_by_bands_or_prev_close(self):
+        pf = {"cash": 25905.0, "positions": [{"symbol": "DEMO", "qty": 73}]}
+        o = demo()
+        o["legs"] = [lg for lg in o["legs"] if lg["role"] != "entry"]
+        for kw in ({"bands": None}, {"bands_as_of": "2026-10-01"}, {"prev_close": {}}):
+            res = run(o, portfolio=pf, **kw)
+            self.assertEqual((verdicts(res), res["results"][0]["kind"]), (["PASS"], "exit"), kw)
 
 
 class Legs(unittest.TestCase):
@@ -465,9 +501,14 @@ class Exits(unittest.TestCase):
 
 class Cli(unittest.TestCase):
     def base(self, d, *extra):
+        """CLI args; a prices.json with DEMO's previous close quoted on 2026-10-27 (an explicit --prices wins)."""
         none = os.path.join(d, "none")
+        pp = os.path.join(d, "prev-close.json")
+        with open(pp, "w") as fh:
+            json.dump({"as_of": "2026-10-27T04:00:00Z", "prices": {},
+                       "detail": {"DEMO": {"prev_close": 1000.0, "time": "2026-10-27T04:00:00Z"}}}, fh)
         return ["--orders", DEMO_PATH, "--config", CFG_PATH, "--portfolio", none, "--state", none,
-                "--universe", none, "--no-write"] + list(extra)
+                "--universe", none, "--prices", pp, "--no-write"] + list(extra)
 
     def test_prices_file_freshness_and_prev_close(self):
         with tempfile.TemporaryDirectory() as d:
@@ -508,12 +549,102 @@ class Cli(unittest.TestCase):
             self.assertEqual(doc["bands"]["ABAN"]["series"], "BE")
             buf = io.StringIO()
             with redirect_stdout(buf):
-                check.main(self.base(d, "--bands", cache, "--now", "2026-10-28 10:00", "--json"))
-            self.assertIn("price bands are from 2026-10-27", " ".join(json.loads(buf.getvalue())["warnings"]))
+                code = check.main(self.base(d, "--bands", cache, "--now", "2026-10-28 10:00", "--offline", d,
+                                            "--json"))
+            doc = json.loads(buf.getvalue())
+            self.assertEqual(code, 1)
+            self.assertIn("price bands are from 2026-10-27", " ".join(doc["warnings"]))
+            self.assertIn("run check.py --refresh-bands", " | ".join(doc["results"][0]["reasons"]))
             buf = io.StringIO()
             with redirect_stdout(buf):
-                check.main(self.base(d, "--bands", os.path.join(d, "nobands.json"), "--now", NOW, "--json"))
-            self.assertIn("--refresh-bands", " ".join(json.loads(buf.getvalue())["warnings"]))
+                code = check.main(self.base(d, "--bands", os.path.join(d, "nobands.json"), "--now", NOW,
+                                            "--offline", d, "--json"))
+            doc = json.loads(buf.getvalue())
+            self.assertEqual(code, 1)
+            self.assertIn("--refresh-bands", " ".join(doc["warnings"]))
+            self.assertIn("circuit: NSE price bands are not loaded", " | ".join(doc["results"][0]["reasons"]))
+
+    def test_missing_bands_try_one_live_refresh(self):
+        with open(SEC_LIST, encoding="utf-8") as fh:
+            text = fh.read()
+        calls = []
+        real = check.fetch_sec_list
+
+        def fake(offline=None):
+            calls.append(offline)
+            return text, check.SEC_LIST_URL
+
+        def down(offline=None):
+            calls.append(offline)
+            raise check.RiskError("could not fetch %s: network down" % check.SEC_LIST_URL)
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "state", "bands.json")
+            try:
+                check.fetch_sec_list = fake
+                with redirect_stdout(io.StringIO()):
+                    code = check.main(self.base(d, "--bands", cache, "--now", NOW))
+                self.assertEqual((code, calls), (0, [None]))
+                with open(cache) as fh:
+                    self.assertEqual(json.load(fh)["as_of"], TODAY)
+                check.fetch_sec_list = down
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = check.main(self.base(d, "--bands", cache, "--now", "2026-10-28 10:00", "--json"))
+                doc = json.loads(buf.getvalue())
+                self.assertEqual((code, len(calls)), (1, 2))
+                self.assertIn("could not refresh the price bands", " ".join(doc["warnings"]))
+                self.assertIn("run check.py --refresh-bands", " | ".join(doc["results"][0]["reasons"]))
+                # an exit-only file never fetches and is never blocked
+                ex = os.path.join(d, "exit.json")
+                with open(ex, "w") as fh:
+                    json.dump({"orders": [Exits().sell()]}, fh)
+                pf = os.path.join(d, "pf.json")
+                with open(pf, "w") as fh:
+                    json.dump(Exits.PF, fh)
+                args = self.base(d, "--bands", os.path.join(d, "nobands.json"), "--now", NOW)
+                args[args.index("--orders") + 1] = ex
+                args[args.index("--portfolio") + 1] = pf
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(check.main(args), 0)
+                self.assertEqual(len(calls), 2)
+            finally:
+                check.fetch_sec_list = real
+
+    def test_a_raw_csv_takes_its_file_time_as_as_of(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = os.path.join(d, "sec_list.csv")
+            with open(SEC_LIST, encoding="utf-8") as src, open(old, "w", encoding="utf-8") as fh:
+                fh.write(src.read())
+            t = datetime.datetime(2026, 10, 26, 12, 0, tzinfo=datetime.timezone.utc).timestamp()
+            os.utime(old, (t, t))
+            self.assertEqual(check.load_bands(old)[1], "2026-10-26")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = check.main(self.base(d, "--bands", old, "--now", NOW, "--offline", d, "--json"))
+            self.assertEqual(code, 1)
+            self.assertIn("price bands are from 2026-10-26", " | ".join(json.loads(buf.getvalue())["results"][0]["reasons"]))
+
+    def test_a_previous_close_from_yesterday_is_not_used(self):
+        with tempfile.TemporaryDirectory() as d:
+            pp = os.path.join(d, "prices.json")
+
+            def go(detail, as_of="2026-10-27T03:50:00Z"):
+                with open(pp, "w") as fh:
+                    json.dump({"as_of": as_of, "prices": {"DEMO": 1012.0}, "detail": {"DEMO": detail}}, fh)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = check.main(self.base(d, "--prices", pp, "--bands", SEC_LIST, "--now", NOW, "--json"))
+                return code, " | ".join(json.loads(buf.getvalue())["results"][0]["reasons"])
+            code, why = go({"prev_close": 1000.0, "time": "2026-10-26T09:59:00Z"})     # 15:29 IST yesterday
+            self.assertEqual(code, 1)
+            self.assertIn("nse-alerts/alerts.py quote DEMO", why)
+            self.assertEqual(go({"prev_close": 1000.0, "time": "2026-10-27T03:50:00Z"}), (0, ""))
+            self.assertEqual(go({"prev_close": 1000.0}), (0, ""))                         # falls back to as_of
+            code, why = go({"prev_close": 1000.0}, as_of="2026-10-26T10:00:00Z")
+            self.assertIn("nse-alerts/alerts.py quote DEMO", why)
+            code, why = go({"prev_close": None, "time": "2026-10-27T03:50:00Z"})
+            self.assertEqual(code, 1)
+            self.assertIn("nse-alerts/alerts.py quote DEMO", why)
 
     def test_errors_are_one_line(self):
         err = io.StringIO()

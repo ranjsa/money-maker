@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pre-trade risk check for nse-risk. Standard library only; the network only for --refresh-bands.
+"""Pre-trade risk check for nse-risk. Standard library only; the network only for the price bands.
 
 Reads the proposed order groups (nse/orders.json, three Kite legs each: entry,
 stop-loss, target) and checks every group against your rules (nse/config.json),
@@ -30,7 +30,8 @@ What blocks a group (every group):
   fno           an NFO / BFO leg unless "allow_fno": true
   series        the stock is not in the EQ series (BE, BZ, SM... are
                 trade-to-trade or SME: no intraday). From the price-band file,
-                else nse/universe.json; a symbol neither knows is a warning
+                else nse/universe.json; a symbol in neither is blocked (for an
+                exit: a warning); only with neither file loaded is it a warning
   short         selling more than you hold, unless "allow_short": true
 
 What blocks an entry (on top):
@@ -40,8 +41,11 @@ What blocks an entry (on top):
                 than MIS (this is a day trade); an exchange other than NSE / BSE;
                 a stop trigger at or above the entry, a target at or below it
   circuit       the entry within 3 ticks of the upper band (previous close x
-                (1 + band%)); a 2% or 5% band stock unless "allow_banded": true.
-                No previous close or no band for the stock is a warning
+                (1 + band%)); a 2% or 5% band stock unless "allow_banded": true;
+                price bands missing or older than today (one live refresh is
+                tried first, never with --offline); no previous close from
+                today for a banded stock. A stock missing from a fresh band
+                file is a warning
   blocked       a symbol on your "blocked" list
   size          under min_order_inr, over max_order_inr
   position      the stock would be over max_position_pct of the account
@@ -487,15 +491,17 @@ def load_bands(path):
         return None, None
     if path.lower().endswith(".csv"):
         with open(path, encoding="utf-8", errors="replace") as fh:
-            return parse_sec_list(fh.read()), None
+            text = fh.read()
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path), datetime.timezone.utc)
+        return parse_sec_list(text), to_ist(mtime).date().isoformat()
     doc = read_json(path, "price bands")
     if not isinstance(doc, dict) or not isinstance(doc.get("bands"), dict):
         raise RiskError("%s has no \"bands\" object: run check.py --refresh-bands" % path)
     return doc["bands"], doc.get("as_of")
 
 
-def refresh_bands(path, today, offline=None):
-    """Fetch sec_list.csv (or read it from the --offline folder) and write the bands cache."""
+def fetch_sec_list(offline=None):
+    """(text, source) of sec_list.csv: from the --offline folder or file, else the live NSE archive."""
     if offline:
         src = os.path.join(offline, "sec_list.csv") if os.path.isdir(offline) else offline
         try:
@@ -511,11 +517,18 @@ def refresh_bands(path, today, offline=None):
                 text = r.read().decode("utf-8", "replace")
         except Exception as e:
             raise RiskError("could not fetch %s: %s" % (SEC_LIST_URL, e))
+    return text, src
+
+
+def refresh_bands(path, today, offline=None):
+    """Fetch sec_list.csv (or read it from the --offline folder) and write the bands cache.
+    A .csv --bands path is not overwritten: the fresh bands are used in memory only."""
+    text, src = fetch_sec_list(offline)
     bands = parse_sec_list(text)
     if not bands:
         raise RiskError("sec_list.csv from %s has no rows" % src)
     if path.lower().endswith(".csv"):
-        raise RiskError("--refresh-bands writes JSON: give --bands a .json path")
+        return bands
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
@@ -723,14 +736,15 @@ def read_legs(o):
 # ---------------------------------------------------------------- the check
 
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
-          bands=None, prev_close=None, universe=None):
+          bands=None, prev_close=None, universe=None, bands_as_of=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     orders       order groups as nse-budget writes them ({"group", "legs", "why", "plan"})
     now          aware UTC (naive is taken as UTC; default: the real clock); its IST date is "today"
     price_times  {SYM: UTC time of that price}; None = every price counts as fresh
     bands        {SYM: {"series", "band"}} from sec_list.csv (parse_sec_list); None = not loaded
-    prev_close   {SYM: previous close} (prices.json detail[SYM].prev_close)
+    prev_close   {SYM: previous close} from today (load_prices drops an older one)
+    bands_as_of  IST date (YYYY-MM-DD) of the bands; before today blocks entries (None = treated as current)
     universe     EQ symbols from nse/universe.json; None = not loaded"""
     c = dict(DEFAULTS)
     c.update(cfg or {})
@@ -833,11 +847,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 if series != "EQ":
                     reasons.append("series: %s trades in the %s series, not EQ: trade-to-trade or SME, so no "
                                    "intraday (MIS) trading" % (sym, series or "unknown"))
-            elif universe is not None and sym in universe:
+            elif exch in FNO_EXCHANGES or (universe is not None and sym in universe):
                 pass
-            elif exch not in FNO_EXCHANGES:
-                warns.append("series unknown: %s is not in the price-band list or nse/universe.json; check it is an "
-                             "EQ stock before you trade it" % sym)
+            elif universe is not None or bands is not None:
+                later.append("series: %s is not in the EQ universe; refresh bands or universe (check.py "
+                             "--refresh-bands, nse-scanner/scan.py universe)" % sym)
+            else:
+                warns.append("series unknown: %s: neither the price-band list nor nse/universe.json is loaded; "
+                             "check it is an EQ stock before you trade it" % sym)
 
         # the reference price: what one share costs to get in
         plan_entry = _d(plan.get("entry"))
@@ -941,6 +958,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             b = bands.get(sym) if (bands is not None and sym) else None
             if exch in FNO_EXCHANGES:
                 pass
+            elif bands is None:
+                later.append("circuit: NSE price bands are not loaded, so the upper-circuit check cannot run: "
+                             "run check.py --refresh-bands")
+            elif bands_as_of and bands_as_of < today:
+                later.append("circuit: the NSE price bands are from %s, before today (%s): run check.py "
+                             "--refresh-bands" % (bands_as_of, today))
             elif b is None:
                 warns.append("circuit: no price band for %s (refresh nse/state/bands.json: check.py "
                              "--refresh-bands): the circuit check was skipped" % sym)
@@ -953,8 +976,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                                  "out. Off unless \"allow_banded\": true" % (sym, _num(band)))
                 pc = prev_close.get(sym)
                 if pc is None:
-                    warns.append("circuit: no previous close for %s in nse/prices.json (detail.prev_close): the "
-                                 "upper-band check was skipped" % sym)
+                    later.append("circuit: no previous close from today for %s in nse/prices.json "
+                                 "(detail.prev_close), so the upper band is unknown: run nse-alerts/alerts.py "
+                                 "quote %s --write" % (sym, sym))
                 elif ref:
                     room = CIRCUIT_TICKS * tick_for(ref)
                     if long:
@@ -1133,11 +1157,12 @@ def report(res):
     return "\n".join(lines)
 
 
-def load_prices(pdoc):
+def load_prices(pdoc, today=None):
     """prices.json -> ({SYM: price}, {SYM: price time, aware UTC, or None}, {SYM: previous close}).
 
     The price time is the quote's own time (detail.time), else when it was fetched
-    (detail.fetched), else the file's as_of."""
+    (detail.fetched), else the file's as_of. A previous close is kept only when its quote time
+    (detail.time, else as_of) is on `today` (IST), so yesterday's file cannot set today's band."""
     if not isinstance(pdoc, dict):
         return {}, {}, {}
     prices = pdoc.get("prices", pdoc)
@@ -1146,16 +1171,29 @@ def load_prices(pdoc):
     out, times, prev = {}, {}, {}
     as_of = parse_utc(pdoc.get("as_of"))
     detail = pdoc.get("detail") or {}
+    for s, d in (detail.items() if isinstance(detail, dict) else []):
+        d = d if isinstance(d, dict) else {}
+        when = parse_utc(d.get("time")) or as_of
+        if _f(d.get("prev_close")) and (today is None or (when and to_ist(when).date().isoformat() == today)):
+            prev[str(s).upper()] = _f(d["prev_close"])
     for s, p in prices.items():
         s = str(s).upper()
         d = detail.get(s) or {}
-        if _f(d.get("prev_close")):
-            prev[s] = _f(d["prev_close"])
         if _f(p) is None:
             continue
         out[s] = _f(p)
         times[s] = parse_utc(d.get("time")) or parse_utc(d.get("fetched")) or as_of
     return out, times, prev
+
+
+def has_entry(orders):
+    """True when any group may be an entry (a BUY or entry-role leg): only those need fresh bands."""
+    for o in orders:
+        for lg in (o.get("legs") if isinstance(o, dict) and isinstance(o.get("legs"), list) else []):
+            if isinstance(lg, dict) and (str(lg.get("role", "")).lower() == "entry"
+                                         or str(lg.get("transaction_type", "")).upper() == "BUY"):
+                return True
+    return False
 
 
 def write_verdicts(path, res, orders_file):
@@ -1199,7 +1237,7 @@ def main(argv=None):
     ap.add_argument("--universe", default="nse/universe.json", help="EQ symbols from nse-scanner")
     ap.add_argument("--refresh-bands", action="store_true",
                     help="fetch today's sec_list.csv from nsearchives.nseindia.com into --bands first")
-    ap.add_argument("--offline", metavar="DIR", help="with --refresh-bands: read DIR/sec_list.csv instead")
+    ap.add_argument("--offline", metavar="DIR", help="read DIR/sec_list.csv for --refresh-bands; never fetch the bands live")
     ap.add_argument("--now", help="pretend it is this IST time, e.g. \"2026-10-27 10:15\"")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in IST)")
     ap.add_argument("--out", default="nse/state/risk.json", help="where the verdicts are recorded")
@@ -1221,15 +1259,24 @@ def main(argv=None):
         cfg = read_json(a.config, "config", required=False) or {}
         portfolio = read_json(a.portfolio, "portfolio", required=False)
         pdoc = read_json(a.prices, "prices", required=False) or {}
-        prices, times, prev = load_prices(pdoc)
+        prices, times, prev = load_prices(pdoc, today)
         state = read_json(a.state, "broker state", required=False)
+        refresh_note = None
         if a.refresh_bands:
             bands, bands_as_of = refresh_bands(a.bands, today, a.offline), today
         else:
             bands, bands_as_of = load_bands(a.bands)
+            if (bands is None or (bands_as_of and bands_as_of < today)) and not a.offline and has_entry(orders):
+                try:   # one live try; without it the entries are blocked (circuit)
+                    bands, bands_as_of = refresh_bands(a.bands, today), today
+                    refresh_note = "price bands refreshed from %s" % SEC_LIST_URL
+                except RiskError as e:
+                    refresh_note = "could not refresh the price bands (%s)" % e
         universe = load_universe(a.universe)
         res = check(orders, cfg, portfolio, prices, state, today, now, times, bands=bands, prev_close=prev,
-                    universe=universe)
+                    universe=universe, bands_as_of=bands_as_of)
+        if refresh_note:
+            res["warnings"].append(refresh_note)
         if bands is None:
             res["warnings"].append("price bands not loaded (no %s): run check.py --refresh-bands for the series "
                                    "and circuit checks" % a.bands)
