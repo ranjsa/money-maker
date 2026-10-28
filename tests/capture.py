@@ -39,6 +39,7 @@ SPARK_MAX = 20
 YAHOO = "https://query2.finance.yahoo.com"
 NSE_EQUITY_L = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 NSE_SEC_LIST = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
+NSE_HOLIDAY_MASTER = "https://www.nseindia.com/api/holiday-master?type=trading"
 
 # Liquid names kept in the trimmed EQUITY_L.csv (plus M&M, BAJAJ-AUTO and two BE rows, see trim_equity_l).
 SCANNER_KEEP = [
@@ -78,6 +79,17 @@ REGISTRY = {
         "single": True,
         "files": [
             (YAHOO + "/v8/finance/chart/{sym}?period1={p1}&period2={p2}&interval=5m", "RELIANCE-5m-{day}.json"),
+        ],
+    },
+    "nse-alerts": {
+        # one Yahoo chart JSON per symbol (the files alerts.py --offline reads: yahoo-<SYMBOL>.json), and
+        # NSE's holiday master trimmed to the CM list plus CBM (alerts.py calendar --refresh --offline reads it).
+        # yahoo-ZZZZNOPE.json (Yahoo's 404 body for an unknown symbol) is kept by hand: a 404 raises here.
+        "symbols": ["RELIANCE", "M&M", "TCS"],
+        "per_symbol": True,
+        "files": [
+            (YAHOO + "/v8/finance/chart/{sym}?range=1d&interval=1d", "yahoo-{sym}.json"),
+            (NSE_HOLIDAY_MASTER, "holiday-master.json"),
         ],
     },
     "nse-timemachine": {
@@ -149,6 +161,11 @@ def trim_sec_list(text):
     if missing:
         print("capture: not in today's sec_list.csv (skipped): %s" % ", ".join(missing), file=sys.stderr)
     return "\n".join([header] + [keep[s] for s in RISK_KEEP if s in keep] + [DEMO_SEC_ROW]) + "\n"
+
+
+def trim_holiday_master(doc):
+    """holiday-master?type=trading -> the CM list (what alerts.py reads) plus CBM, one other segment."""
+    return {k: doc[k] for k in ("CM", "CBM") if k in doc}
 
 
 def eq_symbols(csv_text):
@@ -289,7 +306,7 @@ def capture(skill, day, outdir, pause):
     symbols = list(spec.get("symbols", []))
     written = []
     for template, fname in spec["files"]:
-        name = fname.format(day=day.isoformat())
+        name = fname.replace("{sym}", "\0").format(day=day.isoformat())
         url = template.format(day=day.isoformat(), p1=p1, p2=p2, symbols="{symbols}", sym="{sym}")
         if "{symbols}" in url:
             merged = {"spark": {"result": [], "error": None}}
@@ -305,6 +322,10 @@ def capture(skill, day, outdir, pause):
                     body[s] = json.loads(get(url.replace("{sym}", quote(s)), pause))
                 except Exception as e:  # a symbol Yahoo does not know: leave it out, say so
                     print("capture: %s: %s" % (s, e), file=sys.stderr)
+            if spec.get("per_symbol"):
+                for s, doc in body.items():
+                    written.append(write_fixture(outdir, name.replace("\0", s), json.dumps(doc, separators=(",", ":"))))
+                continue
             if spec.get("single") and len(body) == 1:
                 body = next(iter(body.values()))
         else:
@@ -314,6 +335,8 @@ def capture(skill, day, outdir, pause):
                 symbols = eq_symbols(text)
             elif name == "sec_list.csv":
                 text = trim_sec_list(text)
+            elif name == "holiday-master.json":
+                text = json.dumps(trim_holiday_master(json.loads(text)), separators=(",", ":"))
             written.append(write_fixture(outdir, name, text))
             continue
         if "-5m-" in name:
