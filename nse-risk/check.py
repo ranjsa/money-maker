@@ -53,7 +53,7 @@ What blocks an entry (on top):
   leverage      the buy costs more than your cash (MIS margin is not modelled),
                 unless "allow_leverage": true
   duplicate     the same symbol and side twice in this batch, or already
-                placed today (nse/state/broker.json)
+                approved or placed today by another group (nse/state/broker.json)
   daily limit   max_orders_per_day Kite orders (legs) placed today
   loss          qty x (entry - stop) + round-trip charges at the stop over
                 max_loss_per_trade_inr. The entry is the limit price for a LIMIT
@@ -677,11 +677,8 @@ def placed_today(state, today):
 APPROVAL_ENDS = ("placed", "denied", "failed", "declined")
 
 
-def approved_open(state, today):
-    """Today's yeses (nse-broker "approved") with no later placed, denied, failed or declined record for
-    the same group fingerprint: open entries that count toward the day's limits like a placed one.
-    A newer yes for the same group replaces the older one, so a group counts once."""
-    recs = [r for r in broker_records(state) if rec_day(r) == today]
+def _open_approvals(recs):
+    """Indexes into recs (one day's records) of the yeses still open."""
     out = []
     for i, r in enumerate(recs):
         if r.get("status") != "approved":
@@ -690,8 +687,92 @@ def approved_open(state, today):
         later = [x for x in recs[i + 1:] if fp is not None and x.get("fingerprint") == fp]
         if any(x.get("status") in APPROVAL_ENDS or x.get("status") == "approved" for x in later):
             continue
-        out.append(dict(r, _filled=any(x.get("status") == "filled" for x in later)))
+        out.append(i)
     return out
+
+
+def approved_open(state, today):
+    """Today's yeses (nse-broker "approved") with no later placed, denied, failed or declined record for
+    the same group fingerprint: open entries that count toward the day's limits like a placed one.
+    A newer yes for the same group replaces the older one, so a group counts once."""
+    recs = [r for r in broker_records(state) if rec_day(r) == today]
+    return [recs[i] for i in _open_approvals(recs)]
+
+
+# a later record that ends a placed entry's wait for its fill: it will not fill
+PLACED_ENDS = ("failed", "denied", "declined", "cancelled")
+
+
+def is_entry_fill(rec):
+    return rec.get("status") == "filled" and rec.get("leg") == "entry"
+
+
+def is_placed_entry(rec):
+    """nse-broker's placed entry: ticket.py result logs "leg": "entry"; paper.py logs no leg, "kind": "entry"."""
+    if rec.get("status") != "placed":
+        return False
+    lg = rec.get("leg")
+    return lg == "entry" if lg else rec_is_entry(rec)
+
+
+def entry_filled_fps(state, today):
+    return {r.get("fingerprint") for r in broker_records(state)
+            if rec_day(r) == today and is_entry_fill(r) and r.get("fingerprint") is not None}
+
+
+def held_entries(state, today, skip=()):
+    """[(record, unfilled fraction)] for today's BUY entries whose cash is still on its way out: an open
+    yes (approved_open), or a placed entry with no later failed, denied, declined or cancelled record.
+    A fill moves its shares into the portfolio, so only the unfilled rest is held. Fingerprints in
+    skip are left out."""
+    recs = [r for r in broker_records(state) if rec_day(r) == today]
+    out = _open_approvals(recs)
+    for i, r in enumerate(recs):
+        if not is_placed_entry(r):
+            continue
+        fp = r.get("fingerprint")
+        later = [x for x in recs[i + 1:] if fp is not None and x.get("fingerprint") == fp]
+        if any(x.get("status") in PLACED_ENDS for x in later):
+            continue
+        out.append(i)
+    held = []
+    for i in out:
+        r = recs[i]
+        fp = r.get("fingerprint")
+        if fp in skip or not rec_is_entry(r) or rec_side(r) != "BUY":
+            continue
+        filled = sum(_f(x.get("qty")) or 0 for x in recs[i + 1:]
+                     if fp is not None and x.get("fingerprint") == fp and is_entry_fill(x))
+        qty = _f(r.get("qty"))
+        if qty and qty > 0:
+            rest = max(qty - filled, 0) / qty
+        else:
+            rest = 0 if filled else 1
+        if rest > 0:
+            held.append((r, Decimal(str(rest))))
+    return held
+
+
+def count_orders(recs):
+    """Kite orders the day's records stand for. A placed entry that carries its group's legs (paper.py,
+    and ticket.py result) already counts the stop and the target placed after it, so a group counts
+    the larger of its carried legs and its placed records; approvals and records without a fingerprint
+    count their own legs."""
+    total, groups = 0, {}
+    for r in recs:
+        fp = r.get("fingerprint")
+        if fp is None:
+            total += rec_orders(r)
+        else:
+            groups.setdefault(fp, []).append(r)
+    for rs in groups.values():
+        carried = [rec_orders(r) for r in rs if is_placed_entry(r) and r.get("legs") is not None]
+        if carried:
+            placed = [r for r in rs if r.get("status") == "placed"]
+            total += max(max(carried), len(placed)) + sum(rec_orders(r) for r in rs if r.get("status") != "placed")
+        else:
+            total += sum(rec_orders(r) for r in rs)
+    return total
 
 
 # ---------------------------------------------------------------- one group's legs
@@ -802,9 +883,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     chg_cfg = c.get("charges") or {}
     acct, top_warn = account(c, portfolio, prices)
     blocked = {str(b).strip().upper() for b in c.get("blocked") or []}
-    waiting = approved_open(state, today)
-    done_today = placed_today(state, today) + waiting
-    orders_today = sum(rec_orders(r) for r in done_today)
+    # the groups being checked: their own open yes or unfilled placed entry is this check, not a second
+    # trade (so an approved group re-checks as it did before the yes); once its entry fills it counts
+    filled_fps = entry_filled_fps(state, today)
+    mine = {fingerprint(o) for o in orders if isinstance(o, dict)} - filled_fps
+    waiting = [r for r in approved_open(state, today) if r.get("fingerprint") not in mine]
+    done_today = [r for r in placed_today(state, today) if r.get("fingerprint") not in mine] + waiting
+    orders_today = count_orders(done_today)
     entries_today = [r for r in done_today if rec_is_entry(r)]
     loss_today = Decimal("0.00")
     for r in entries_today:
@@ -821,16 +906,15 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                         % (len(waiting), "" if len(waiting) == 1 else "s",
                            ", ".join("%s %s" % (rec_side(r), rec_symbol(r)) for r in waiting),
                            "s" if len(waiting) == 1 else ""))
-    for r in waiting:
-        # hold the cash a yes is about to spend (no shares: nothing is bought until the fill); a fill already
-        # moved it into the portfolio, so a filled one holds nothing more
+    for r, rest in held_entries(state, today, skip=mine):
+        # hold the cash a yes or a placed entry is about to spend (no shares: nothing is bought until the
+        # fill); a fill already moved its part into the portfolio, so only the unfilled rest is held
         val = _d(r.get("value_inr"))
-        if r["_filled"] or not rec_is_entry(r) or rec_side(r) != "BUY":
-            continue
         if val is None:
-            top_warn.append("the approved %s %s has no order value in the log; its cash is not held back"
-                            % (rec_side(r), rec_symbol(r)))
+            top_warn.append("the %s %s %s has no order value in the log; its cash is not held back"
+                            % (r.get("status"), rec_side(r), rec_symbol(r)))
             continue
+        val = (val * rest).quantize(PAISA)
         sym = rec_symbol(r)
         acct["cash"] -= val
         acct["values"][sym] = acct["values"].get(sym, Decimal("0.00")) + val
@@ -1145,7 +1229,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         if key in seen:
             later.append("duplicate: a second %s %s in this batch" % (side, sym))
         if key in placed_keys:
-            later.append("duplicate: a %s %s was already placed today" % (side, sym))
+            later.append("duplicate: a %s %s was already approved or placed today" % (side, sym))
         cap_n = int(c.get("max_orders_per_day") or 0)
         if cap_n and orders_today + batch_orders + len(legs) > cap_n:
             later.append("daily limit: %d orders placed today plus %d passed earlier in this batch, this group is "

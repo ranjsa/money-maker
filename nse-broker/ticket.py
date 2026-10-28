@@ -632,6 +632,9 @@ def after_trades(v, state, today):
         if rec.get("status") not in ("approved", "placed") or rec_day(rec) != today:
             continue
         at = _parse_time(rec.get("at"), IST)
+        rec_at = _parse_time(rec.get("recorded_at"), IST)     # paper.py: "at" is the bar time
+        if at is not None and rec_at is not None and rec_at > at:
+            at = rec_at
         if checked is None or at is None or at >= checked:
             return ("RECHECK", "%s %s %s was %s at %s, after this risk check (%s): the day's trades and loss "
                                "changed, run nse-risk again"
@@ -932,6 +935,9 @@ def cmd_result(a):
            "kind": appr.get("kind", "entry") if a.leg == "entry" else "exit"}
     if a.leg == "entry":
         new["max_loss"], new["stop"] = appr.get("max_loss"), appr.get("stop")
+        if a.status == "placed":
+            # nse-risk holds this cash and counts these Kite orders until the entry fills
+            new["value_inr"], new["legs"] = appr.get("value_inr"), appr.get("legs")
     if a.order_id:
         new["order_id"] = a.order_id
     if a.note:

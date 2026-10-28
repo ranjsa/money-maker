@@ -92,7 +92,7 @@ batch that is fine group by group but breaks a limit together is caught.
 | daily loss | (entries) the max losses at the stops of today's entries, plus this one, over `max_daily_loss_inr` |
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) NSE closed (weekend, NSE holiday by name, pre-open, before 09:15 or after 15:30), before `no_entries_before` (09:30) or after `no_entries_after` (14:45), IST |
-| duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
+| duplicate | (entries) the same symbol and side twice in one batch, or already approved or placed today by another group |
 | daily limit | (entries) `max_orders_per_day` Kite orders (one per leg) already placed today, counting this group's legs |
 
 How the numbers work:
@@ -108,6 +108,7 @@ How the numbers work:
 - **Daily loss** counts the full max loss of every entry placed today, win or
   lose, as nse-broker logged it.
 - **Approvals count toward limits until declined or placed** (trades, orders, daily loss, cash, duplicates).
+  A placed entry holds its cash (the unfilled part) until it fills; the group being re-checked is not its own duplicate.
 - **The circuit band**: a stock locked at its upper circuit has buyers only,
   so a long bought near it may not be sellable at your stop. The check uses
   NSE's band from `sec_list.csv` and the previous close from

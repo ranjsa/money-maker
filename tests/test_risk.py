@@ -447,7 +447,7 @@ class LossAndLimits(unittest.TestCase):
         res = run([demo(), demo()])
         self.assertIn("duplicate: a second BUY DEMO in this batch", reasons(res, 1))
         res = run(demo(), state={"orders": [placed("DEMO")]})
-        self.assertIn("duplicate: a BUY DEMO was already placed today", reasons(res))
+        self.assertIn("duplicate: a BUY DEMO was already approved or placed today", reasons(res))
         st = {"orders": [placed("T%d" % i, kind="exit", max_loss=None, legs=1) for i in range(8)]}
         self.assertIn("daily limit: 8 orders placed today", reasons(run(demo(), state=st)))
 
@@ -504,7 +504,7 @@ class LossAndLimits(unittest.TestCase):
 
     def test_an_approval_is_a_duplicate(self):
         res = run(demo(), state={"orders": [self.approved("DEMO")]})
-        self.assertIn("duplicate: a BUY DEMO was already placed today", reasons(res))
+        self.assertIn("duplicate: a BUY DEMO was already approved or placed today", reasons(res))
 
     def test_an_approval_holds_its_cash_and_position(self):
         # 100,000 budget, 30% buffer: DEMO alone leaves 25,905 (blocked); with 20,000 already approved
@@ -528,6 +528,44 @@ class LossAndLimits(unittest.TestCase):
         y = dict(self.approved("AAA"), date="2026-10-26", at="2026-10-26T10:05:00+05:30")
         res = run(demo(), cfg(max_trades_per_day=1), state={"orders": [y]})
         self.assertEqual(verdicts(res), ["PASS"])
+
+    # ------------------------------------------------ Residual fix 2 and 3
+    def placed_entry(self, sym, fp, value=20000.0, at="10:06"):
+        return dict(self.approved(sym, fp=fp, value=value, at=at), status="placed", leg="entry")
+
+    def test_a_placed_entry_holds_its_cash_until_it_ends(self):
+        a = self.approved("AAA", value=20000.0)
+        p = self.placed_entry("AAA", a["fingerprint"])
+        res = run(demo(), cfg(cash_buffer_pct=20), state={"orders": [a, p]})
+        self.assertIn("cash: leaves ₹5,905.00 cash", reasons(res))
+        self.assertEqual(res["today"]["orders_placed"], 3)
+        for st in ("failed", "denied", "declined", "cancelled"):
+            end = dict(p, status=st, at=TODAY + "T10:07:00+05:30")
+            res = run(demo(), cfg(cash_buffer_pct=20), state={"orders": [a, p, end]})
+            self.assertEqual(verdicts(res), ["PASS"], st)
+
+    def test_a_placed_entry_counts_its_carried_legs_once(self):
+        a = self.approved("AAA", value=20000.0)
+        recs = [a, self.placed_entry("AAA", a["fingerprint"])]
+        for lg in ("stop", "target"):
+            recs.append({"status": "placed", "leg": lg, "fingerprint": a["fingerprint"], "symbol": "AAA",
+                         "side": "SELL", "kind": "exit", "qty": 20, "date": TODAY, "at": TODAY + "T10:08:00+05:30"})
+        self.assertEqual(run(demo(), state={"orders": recs})["today"]["orders_placed"], 3)
+        recs.append(dict(recs[-1], at=TODAY + "T10:09:00+05:30"))     # the target placed a second time
+        self.assertEqual(run(demo(), state={"orders": recs})["today"]["orders_placed"], 4)
+
+    def test_the_group_being_checked_is_not_its_own_duplicate(self):
+        fp = check.fingerprint(demo())
+        a = self.approved("DEMO", fp=fp, value=74095.0)
+        res = run(demo(), state={"orders": [a]})
+        self.assertEqual(verdicts(res), ["PASS"], reasons(res))
+        res = run(demo(), state={"orders": [a, self.placed_entry("DEMO", fp, value=74095.0)]})
+        self.assertEqual(verdicts(res), ["PASS"], reasons(res))
+        # once it filled it is a trade on the book: checking it again is a duplicate
+        f = {"status": "filled", "leg": "entry", "fingerprint": fp, "symbol": "DEMO", "side": "BUY", "qty": 73,
+             "price": 1015.0, "date": TODAY, "at": TODAY + "T10:07:00+05:30"}
+        res = run(demo(), state={"orders": [a, self.placed_entry("DEMO", fp, value=74095.0), f]})
+        self.assertIn("duplicate: a BUY DEMO was already approved or placed today", reasons(res))
 
     def test_live_account_warns(self):
         # I5: LIVE is "broker": "kite" (with "paper": false to match)

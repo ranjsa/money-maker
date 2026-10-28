@@ -352,6 +352,47 @@ class PaperRun(unittest.TestCase):
         self.assertIn("today", err)
         self.assertEqual(len(self.records(self.state)), 1)
 
+    # ------------------------------------------------ residual fix 1
+    def add_record(self, status, at):
+        with open(self.state, encoding="utf-8") as fh:
+            st = json.load(fh)
+        r = dict(st["orders"][0])
+        r.update(status=status, at=at, date=at[:10])
+        st["orders"].append(r)
+        with open(self.state, "w", encoding="utf-8") as fh:
+            json.dump(st, fh)
+
+    def test_a_yes_declined_later_is_refused(self):
+        for later in ("declined", "denied", "failed"):
+            self.approve_at("2026-10-27T09:35:00+05:30")
+            self.add_record(later, "2026-10-27T09:36:00+05:30")
+            with open(self.state, encoding="utf-8") as fh:
+                before = fh.read()
+            code, _, err = self.go(approved=None)
+            self.assertEqual(code, 1, later)
+            self.assertIn(later, err)
+            with open(self.state, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), before, later)
+
+    def test_a_yes_given_again_after_a_decline_runs(self):
+        self.approve_at("2026-10-27T09:35:00+05:30")
+        self.add_record("declined", "2026-10-27T09:36:00+05:30")
+        self.add_record("approved", "2026-10-27T09:37:00+05:30")
+        self.set_bar("10:05", 1009.0, 1010.0, 1004.0, 1006.0)
+        code, _, err = self.go(approved=None)
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r["status"] for r in self.records(self.state)][-3:], ["placed", "filled", "filled"])
+
+    def test_every_paper_record_carries_the_real_clock(self):
+        self.approve_at("2026-10-27T09:35:00+05:30")
+        self.set_bar("10:05", 1009.0, 1010.0, 1004.0, 1006.0)
+        self.assertEqual(self.go(approved=None)[0], 0)
+        made = self.records(self.state)[1:]
+        self.assertEqual(len(made), 3)
+        want = paper.to_ist(paper.real_now()).isoformat()
+        self.assertEqual([r.get("recorded_at") for r in made], [want] * 3)
+        self.assertNotEqual(made[0]["at"], want)          # "at" stays the bar time
+
     def test_offline_never_touches_the_network(self):
         # setUp replaced the fetcher with one that raises; a full run must still work
         code, _, err = self.go()

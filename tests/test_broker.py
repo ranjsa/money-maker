@@ -422,7 +422,7 @@ class Flow(unittest.TestCase):
         today = ist_today()
         res = check.check([demo()], {"budget": 100000}, state={"orders": st}, today=today, now=real_now())
         self.assertEqual(res["today"], {"orders_placed": 3, "entries_placed": 1, "loss_at_risk": 788.66})
-        self.assertIn("already placed today", " ".join(res["results"][0]["reasons"]))
+        self.assertIn("already approved or placed today", " ".join(res["results"][0]["reasons"]))
         with open(self.pf, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["positions"], [])
 
@@ -713,6 +713,122 @@ class Flow(unittest.TestCase):
         run(self.args("decline", "--index", "2", "--reply", "no"))
         res = check.check([groups[0]], c, state=self.state_doc(), today=ist_today(), now=real_now())
         self.assertEqual(res["today"]["entries_placed"], 0)
+
+    # ------------------------------------------------ Residual fix 2: a placed entry holds its cash until it fills
+    def recheck(self, orders, **over):
+        """nse-risk on these groups against broker.json and portfolio.json as they stand (bands loaded)."""
+        c = {"budget": 1000000, "cash_buffer_pct": 0, "max_trades_per_day": 10, "max_orders_per_day": 50,
+             "daily_loss_limit": 100000, "max_loss_per_trade": 100000, "max_position_pct": 100}
+        c.update(over)
+        pf = None
+        if os.path.exists(self.pf):
+            with open(self.pf, encoding="utf-8") as fh:
+                pf = json.load(fh)
+        st = self.state_doc() if os.path.exists(self.state) else None
+        with open(os.path.join(FIX, "nse-risk", "sec_list.csv"), encoding="utf-8") as fh:
+            bands = check.parse_sec_list(fh.read())
+        return check.check(orders, c, portfolio=pf, state=st, today=ist_today(), now=real_now(), bands=bands,
+                           prev_close={"DEMO": 1000.0, "TCS": 1400.0}, bands_as_of=ist_today())
+
+    def kite_with_cash(self, cash):
+        self.approve_kite()
+        with open(self.pf, "w", encoding="utf-8") as fh:
+            json.dump({"cash": cash, "positions": []}, fh)
+
+    def test_a_placed_entry_holds_its_cash_once_until_and_after_the_fill(self):
+        tcs = other(symbol="TCS", group="TCS-1")          # 20 x 1,450 = 29,000
+        self.kite_with_cash(1000000.0)
+        want = 1000000.0 - 74095.0 - 29000.0
+        seen = []
+        res = self.recheck([tcs])
+        seen.append((res["cash_after"], res["today"]["orders_placed"]))
+        run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed", "--order-id", "111"))
+        placed = [r for r in self.state_doc()["orders"] if r["status"] == "placed"][0]
+        self.assertEqual((placed["legs"], placed["value_inr"]), (3, 74095.0))
+        res = self.recheck([tcs])
+        seen.append((res["cash_after"], res["today"]["orders_placed"]))
+        self.assertEqual(self.fill("--leg", "entry", "--price", "1015")[0], 0)
+        res = self.recheck([tcs])
+        seen.append((res["cash_after"], res["today"]["orders_placed"]))
+        run(self.args("result", "--index", "1", "--leg", "stop", "--status", "placed", "--order-id", "222"))
+        run(self.args("result", "--index", "1", "--leg", "target", "--status", "placed", "--order-id", "333"))
+        res = self.recheck([tcs])
+        seen.append((res["cash_after"], res["today"]["orders_placed"]))
+        self.assertEqual(seen, [(want, 3)] * 4)
+
+    def test_a_placed_unfilled_entry_still_blocks_a_buy_over_the_cash(self):
+        tcs = other(symbol="TCS", group="TCS-1")
+        self.kite_with_cash(120000.0)
+        run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed", "--order-id", "111"))
+        res = self.recheck([tcs], cash_buffer_pct=30)
+        self.assertEqual([r["verdict"] for r in res["results"]], ["BLOCK"])
+        # 120,000 - 74,095 held - 29,000 = 16,905, under the 36,000 buffer
+        self.assertIn("cash: leaves ₹16,905.00 cash, under your 30% buffer of ₹36,000.00",
+                      " ".join(res["results"][0]["reasons"]))
+        os.remove(self.state)
+        self.assertEqual([r["verdict"] for r in self.recheck([tcs], cash_buffer_pct=30)["results"]], ["PASS"])
+
+    def test_a_partial_entry_fill_holds_the_unfilled_rest(self):
+        tcs = other(symbol="TCS", group="TCS-1")
+        for place in (True, False):
+            self.kite_with_cash(1000000.0)
+            if place:
+                run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed", "--order-id", "1"))
+            self.assertEqual(self.fill("--leg", "entry", "--price", "1015", "--qty", "30")[0], 0)
+            # 30 filled (30,450 in the portfolio), 43 x 1,015 = 43,645 still held
+            self.assertEqual(self.recheck([tcs])["cash_after"], 1000000.0 - 30450.0 - 43645.0 - 29000.0, place)
+            os.remove(self.state)
+
+    # ------------------------------------------------ Residual fix 3: an approved group re-checks as before
+    def test_an_approved_group_rechecks_as_it_did_before(self):
+        write_risk(self.risk, [demo()])
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 0)
+        before = self.recheck([demo()])
+        self.assertEqual([r["verdict"] for r in before["results"]], ["PASS"], before["results"][0]["reasons"])
+        check.write_verdicts(self.risk, before, self.orders)
+        with open(self.risk, encoding="utf-8") as fh:       # restamp on the pinned test clock
+            doc = json.load(fh)
+        doc["checked_at"] = FAKE_NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+        for v in doc["verdicts"].values():
+            v["checked_at"] = doc["checked_at"]
+        with open(self.risk, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertNotIn("BLOCKED", text)
+        self.assertIn("APPROVED by you", text)
+        # placed, not filled yet: still the same group, still not its own duplicate
+        self.set_broker("kite")
+        run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed", "--order-id", "111"))
+        self.assertEqual([r["verdict"] for r in self.recheck([demo()])["results"]], ["PASS"])
+
+    def test_an_approval_still_blocks_another_group_for_the_symbol(self):
+        write_risk(self.risk, [demo()])
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 0)
+        again = demo(group="DEMO-2026-10-27-2")
+        again["legs"][0]["quantity"] = again["legs"][1]["quantity"] = again["legs"][2]["quantity"] = 50
+        res = self.recheck([again])
+        self.assertIn("duplicate: a BUY DEMO was already approved or placed today",
+                      " ".join(res["results"][0]["reasons"]))
+        res = self.recheck([demo(), demo()])
+        self.assertEqual([r["verdict"] for r in res["results"]], ["PASS", "BLOCK"])
+        self.assertIn("duplicate: a second BUY DEMO in this batch", " ".join(res["results"][1]["reasons"]))
+
+    # ------------------------------------------------ Residual fix 4: a paper record dated by its bar
+    def test_a_paper_record_recorded_after_the_check_is_stale(self):
+        write_risk(self.risk, [demo()], checked_at=self.stamp(-5)[0])          # checked 10:25
+        os.makedirs(os.path.dirname(self.state), exist_ok=True)
+        rec = {"at": "2026-10-27T10:05:00+05:30", "recorded_at": "2026-10-27T10:29:00+05:30",
+               "date": ist_today(), "status": "placed", "group": "RELIANCE-2026-10-27-1", "fingerprint": "x",
+               "symbol": "RELIANCE", "side": "BUY", "qty": 20, "kind": "entry", "broker": "paper"}
+        with open(self.state, "w", encoding="utf-8") as fh:
+            json.dump({"orders": [rec]}, fh)
+        text = run(self.args("show", "--index", "1"))[1]
+        self.assertIn("RECHECK", text)
+        self.assertIn("after this risk check", text)
+        rec["recorded_at"] = "2026-10-27T10:20:00+05:30"
+        with open(self.state, "w", encoding="utf-8") as fh:
+            json.dump({"orders": [rec]}, fh)
+        self.assertNotIn("after this risk check", run(self.args("show", "--index", "1"))[1])
 
     # ------------------------------------------------ I5: broker and paper must agree
     def set_cfg(self, **over):

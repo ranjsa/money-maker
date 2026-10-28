@@ -634,19 +634,29 @@ def simulate(group, bars, approved, flat_dt, cfg_charges=None, last_entry=None):
 
 # ---------------------------------------------------------------- commands
 
+# the records that give or take back a yes: only the latest one for a group counts
+YES_OR_NO = ("approved", "declined", "denied", "failed")
+
+
 def _approval_time(a, state, fp):
     if a.approved_at:
         try:
             return parse_now(a.approved_at)
         except ValueError as e:
             raise PaperError(str(e).replace("--now", "--approved-at"))
-    found = None
+    found = latest = None
     for r in state["orders"]:
-        if r.get("fingerprint") == fp and r.get("status") == "approved":
-            found = r
+        if r.get("fingerprint") == fp and r.get("status") in YES_OR_NO:
+            latest = r
+            if r.get("status") == "approved":
+                found = r
     if not found:
         raise PaperError("no yes is recorded for this group: run ticket.py approve with the user's yes first "
                          "(or pass --approved-at to replay a past session, which is never counted)")
+    if latest is not found:
+        raise PaperError("the yes for this group was followed by a \"%s\" record (at %s): a yes that was taken "
+                         "back is not played. Ask the user again (ticket.py show, then approve)"
+                         % (latest.get("status"), latest.get("at")))
     if str(found.get("broker") or "paper").lower() != "paper":
         raise PaperError("the yes for this group was recorded for %s, not paper: the paper engine does not play it"
                          % found.get("broker"))
@@ -728,6 +738,7 @@ def cmd_run(a):
     print("%s: %s, %d %s, approved %s IST, 5-minute bars of %s (%s)"
           % ("REPLAY" if replay else "PAPER", a.group, qty, sym, local.strftime("%H:%M"), ds, src))
     ent = res["entry"]
+    recorded_at = to_ist(real_now()).isoformat()      # "at" is the bar time; this is when it was written
     if ent is not None:
         print("  entry       BUY %d %s at %s, %s" % (qty, sym, inr(ent["price"]), ent["how"]))
         if not had_entry:
@@ -737,7 +748,7 @@ def cmd_run(a):
             else:
                 ml = _f(plan.get("max_loss"))
             base = {"date": ds, "group": a.group, "fingerprint": fp, "symbol": sym, "qty": qty,
-                    "broker": "paper", "paper": True}
+                    "broker": "paper", "paper": True, "recorded_at": recorded_at}
             if replay:
                 base["replay"] = True
             state["orders"].append(dict(base, at=to_ist(ent["t"]).isoformat(), status="placed", side="BUY",
@@ -757,7 +768,7 @@ def cmd_run(a):
                                 "fingerprint": fp, "leg": ex["leg"], "symbol": sym, "side": "SELL", "qty": qty,
                                 "price": float(ex["price"]), "time": ex["time"], "gross_pnl": float(ex["gross"]),
                                 "charges": float(ex["charges"]), "net_pnl": float(ex["net"]), "note": ex["how"],
-                                "broker": "paper", "paper": True, "replay": replay,
+                                "broker": "paper", "paper": True, "replay": replay, "recorded_at": recorded_at,
                                 "plain": "paper: SELL %d %s at %s (%s)" % (qty, sym, inr(ex["price"]), ex["leg"])})
     for n in res["notes"]:
         print("  note: " + n)
