@@ -379,8 +379,71 @@ class Flow(unittest.TestCase):
         with open(self.pf, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["positions"], [])
 
+    def approve_kite(self):
+        self.set_broker("kite")
+        write_risk(self.risk, [demo()])
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 0, text)
+
+    def test_fill_without_an_approval_is_refused(self):
+        self.set_broker("kite")
+        code, text, err = self.fill("--leg", "entry", "--price", "1015")
+        self.assertEqual(code, 1)
+        self.assertIn("no yes recorded", err)
+        self.assertNotIn("place_order", text)
+        self.assertFalse(os.path.exists(self.state))
+        self.assertFalse(os.path.exists(self.pf))
+
+    def test_a_stop_or_target_fill_needs_the_entry_fill_first(self):
+        self.approve_kite()
+        for lg in ("stop", "target"):
+            code, text, err = self.fill("--leg", lg, "--price", "1005.20")
+            self.assertEqual(code, 1, lg)
+            self.assertIn("entry leg has no fill", err)
+            self.assertNotIn("cancel_order", text)
+        self.assertFalse(os.path.exists(self.pf))
+
+    def test_a_fill_qty_above_the_leg_is_refused(self):
+        self.approve_kite()
+        code, text, err = self.fill("--leg", "entry", "--price", "1015", "--qty", "730")
+        self.assertEqual(code, 1)
+        self.assertIn("more than the entry leg's quantity 73", err)
+        self.assertNotIn("730", text)
+        self.assertFalse(os.path.exists(self.pf))
+        self.assertEqual(self.fill("--leg", "entry", "--price", "1015", "--qty", "50")[0], 0)
+        code, _, err = self.fill("--leg", "stop", "--price", "1005.20", "--qty", "60")
+        self.assertEqual(code, 1)
+        self.assertIn("50 shares the entry fill left open", err)
+
+    def test_paper_mode_fill_leaves_the_portfolio_alone(self):
+        write_risk(self.risk, [demo()])
+        run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        code, text, _ = self.fill("--leg", "entry", "--price", "1015.00")
+        self.assertEqual(code, 0, text)
+        self.assertFalse(os.path.exists(self.pf))
+        self.assertEqual(self.state_doc()["orders"][-1]["status"], "filled")
+
+    def test_a_check_with_no_usable_time_needs_a_recheck(self):
+        for bad in (None, "garbage"):
+            write_risk(self.risk, [demo()])
+            with open(self.risk, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            for rec in [doc] + list(doc["verdicts"].values()):
+                for k in ("checked_at", "now_ist"):
+                    if bad is None:
+                        rec.pop(k, None)
+                    else:
+                        rec[k] = bad
+            with open(self.risk, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+            code, text, _ = run(self.args("show"))
+            self.assertEqual(code, 1, bad)
+            self.assertIn("RECHECK: the risk check has no usable time: run nse-risk again", text)
+            self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 1)
+
     def test_fill_without_an_order_id_prints_a_placeholder(self):
         write_risk(self.risk, [demo()])
+        run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
         self.fill("--leg", "entry", "--price", "1015.00")
         code, text, _ = self.fill("--leg", "stop", "--price", "1005.20")
         self.assertEqual(code, 0, text)

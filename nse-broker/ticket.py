@@ -20,7 +20,10 @@ work around the one moment that matters, your yes:
   decline   records a no.
   result    records what happened to one leg after Claude's Needs approval
             card: placed (with Kite's order id), denied, or failed.
-  fill      records a leg's fill in nse/state/broker.json and nse/portfolio.json.
+  fill      records a leg's fill in nse/state/broker.json (and, with "broker":
+            "kite", nse/portfolio.json). It needs your yes recorded today; a
+            stop, target or exit fill needs the entry fill first, and --qty can
+            never exceed the leg or what the entry left open.
             After the entry it prints the stop-loss and target place_order
             calls; after the stop or the target it prints the cancel_order
             call for the other leg, so it is never left open.
@@ -560,6 +563,8 @@ def risk_verdict(risk, fp, today, now_real):
         return v, ("RECHECK", "the risk check is %d minutes old (the limit is %d): run nse-risk again"
                    % (mins, FRESH_MINUTES))
     ran = _parse_time(v.get("now_ist") or v.get("now"), IST)
+    if checked is None and ran is None:
+        return v, ("RECHECK", "the risk check has no usable time: run nse-risk again")
     if ran is not None and abs(now_real - ran) > limit:
         return v, ("RECHECK", "the risk check ran with a pinned clock (%s IST, not now): run nse-risk again"
                    % v.get("now_ist", v.get("now")))
@@ -844,17 +849,36 @@ def cmd_fill(a):
     lg = leg(group, a.leg)
     if lg is None:
         raise TicketError("group %s has no %s leg" % (a.group, a.leg))
+    broker = broker_of(cfg)
     now, today = _clock(a)
-    qty = _f(a.qty) if a.qty is not None else _f(lg.get("quantity"))
+    fp = fingerprint(group)
+    state = load_state(a.state)
+    if not latest(state, fp, today, ("approved",)):
+        raise TicketError("group %s has no yes recorded today: a fill can only follow an approval "
+                          "(ticket.py approve)" % a.group)
+    leg_qty = _f(lg.get("quantity"))
+    qty = _f(a.qty) if a.qty is not None else leg_qty
     price = _f(a.price)
     if not qty or qty <= 0 or qty != int(qty) or not price or price <= 0:
         raise TicketError("a fill needs a whole positive --qty and a positive --price")
     qty = int(qty)
+    if leg_qty is None or qty > leg_qty:
+        raise TicketError("--qty %d is more than the %s leg's quantity %s" % (qty, a.leg, _num(leg_qty or 0)))
+    if a.leg != "entry" and leg(group, "entry") is not None:
+        entry_fills = [r for r in state["orders"] if r.get("fingerprint") == fp and rec_day(r) == today
+                       and r.get("status") == "filled" and r.get("leg") == "entry"]
+        if not entry_fills:
+            raise TicketError("the entry leg has no fill recorded today: record it first (ticket.py fill --group %s "
+                              "--leg entry --price P)" % a.group)
+        held = sum(int(r.get("qty") or 0) for r in entry_fills) - sum(
+            int(r.get("qty") or 0) for r in state["orders"] if r.get("fingerprint") == fp and rec_day(r) == today
+            and r.get("status") == "filled" and r.get("leg") in ("stop", "target", "exit"))
+        if qty > held:
+            raise TicketError("--qty %d is more than the %d shares the entry fill left open" % (qty, held))
     side = str(lg.get("transaction_type", "")).upper()
     sym = group_symbol(group)
-    fp = fingerprint(group)
-    state = load_state(a.state)
-    apply_fill(a.portfolio, cfg, sym, side.lower(), qty, price, today)
+    if broker != "paper":
+        apply_fill(a.portfolio, cfg, sym, side.lower(), qty, price, today)
     state["orders"].append({"at": ist_iso(now), "date": today, "status": "filled", "group": a.group,
                             "fingerprint": fp, "leg": a.leg, "symbol": sym, "side": side, "qty": qty,
                             "price": price, "plain": "%s %d %s at %s (%s)" % (side, qty, sym, inr(price), a.leg)})
