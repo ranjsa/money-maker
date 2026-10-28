@@ -347,7 +347,7 @@ def day_label(d):
 def calendar_warning(d, cfg=None):
     """'' or the one-line warning for a year the holiday list does not hold."""
     if trading_day(d, cfg)[1] == "calendar not loaded":
-        return ("NSE calendar for %d not loaded: run scan.py calendar --refresh or check nseindia.com "
+        return ("NSE calendar for %d not loaded: run nse-alerts/alerts.py calendar --refresh or check nseindia.com "
                 "(treating Mon-Fri as open)" % d.year)
     return ""
 

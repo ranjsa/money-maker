@@ -278,6 +278,7 @@ class Window(unittest.TestCase):
         w = scan.calendar_warning(D(2027, 3, 2))
         self.assertIn("NSE calendar for 2027 not loaded", w)
         self.assertIn("nseindia.com", w)
+        self.assertIn("nse-alerts/alerts.py calendar --refresh", w)
 
 
 class DemoOrb(unittest.TestCase):
