@@ -101,9 +101,9 @@ Zerodha's own server is github.com/zerodha/kite-mcp-server (MIT), checked on
 - **Hosted**: `https://mcp.kite.trade/mcp`, through `npx mcp-remote`. No install
   and no API key; the `login` tool gives a Kite login link to open in the
   browser. Its README says the hosted server leaves out `place_order`,
-  `modify_order` and `cancel_order`: it reads quotes, orders and positions,
-  but it cannot place an order.
-- **Self-hosted** (needed to place orders): build `zerodha/kite-mcp-server`
+  `modify_order` and `cancel_order`: it is read-only for orders. It reads
+  quotes, orders and positions, but it cannot place, modify or cancel one.
+- **Self-hosted** (the only way to place live orders): build `zerodha/kite-mcp-server`
   (`go build -o kite-mcp-server`), create a Kite Connect app for an API key
   and secret, and put them in the `env` block with `"APP_MODE": "stdio"`.
 

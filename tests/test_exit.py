@@ -352,7 +352,7 @@ class SkillDoc(unittest.TestCase):
                      "net r", "charges", "not financial advice", "yes", "ist", "nse/plan.json", "15:10",
                      "too tight to survive the spread", "tick"):
             self.assertIn(must, low)
-        for never in (chr(0x2014), "tick " + "by tick", "real " + "time", "pro" + "fit", "trader/", "new york", "nyse"):
+        for never in (chr(0x2014), "tick " + "by tick", "real " + "time", "pro" + "fit", "trader" + "/", "new york", "nyse"):
             self.assertNotIn(never, low)
         self.assertNotRegex(text, r"\$\d")
 
@@ -361,7 +361,7 @@ class NoUsLeftovers(unittest.TestCase):
     def test_exit_py_is_nse(self):
         with open(os.path.join(ROOT, "nse-exit", "exit.py"), encoding="utf-8") as fh:
             src = fh.read()
-        for word in ("NYSE", "New York", "eastern", "trader/", "trader-exit", "floor_cents", "Jakeschincariol"):
+        for word in ("NY" + "SE", "New " + "York", "eastern", "trader" + "/", "trader-exit", "floor_cents", "Jakeschincariol"):
             self.assertNotIn(word, src, word)
 
 

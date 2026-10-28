@@ -700,7 +700,7 @@ class Cli(unittest.TestCase):
     def test_no_us_leftovers_in_the_tool(self):
         with open(os.path.join(ROOT, "nse-risk", "check.py"), encoding="utf-8") as fh:
             text = fh.read()
-        for word in ("New York", "NYSE", "Alpaca", "trader/", "pdt", "eastern", "_usd", "OCC"):
+        for word in ("New " + "York", "NY" + "SE", "Alp" + "aca", "trader" + "/", "pdt", "eastern", "_usd", "OCC"):
             self.assertNotIn(word, text, word)
 
 

@@ -86,15 +86,16 @@ class Repo(unittest.TestCase):
     def test_common_blocks_identical(self):
         self.assertEqual(subprocess.call([sys.executable, "tests/sync_common.py", "--check"], cwd=ROOT), 0)
 
-    @unittest.skip("unskipped in Task 14")
-    def test_no_us_leftovers(self):  # outside tests/fixtures and README credits
+    def test_no_us_leftovers(self):  # outside tests/fixtures and the upstream credit (LICENSE, README credit lines)
         for path in every_text_file():
             rel = os.path.relpath(path, ROOT)
-            if rel.startswith(os.path.join("tests", "fixtures")) or rel in ("README.md", "LICENSE"):
+            if rel.startswith(os.path.join("tests", "fixtures")) or rel == "LICENSE":
                 continue
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
-            for word in ("New York", "NYSE", "EDGAR", "Alpaca", "Pelosi", "trader/"):
+            if rel == "README.md":  # only the lines that credit the upstream pack may name it
+                text = "\n".join(l for l in text.splitlines() if "github.com/Jakeschincariol/" not in l)
+            for word in ("New " + "York", "NY" + "SE", "ED" + "GAR", "Alp" + "aca", "Pel" + "osi", "trader" + "/"):
                 self.assertNotIn(word, text, "%s: %s" % (rel, word))
 
     def test_no_em_dashes_and_no_personal_email(self):
@@ -151,7 +152,7 @@ class Repo(unittest.TestCase):
                          (100000, 1000, 3000))
         self.assertEqual((cfg["max_order_inr"], cfg["min_order_inr"]), (80000, 500))
         self.assertIs(cfg["require_stop"], True)
-        for k in ("allow_leverage", "allow_short", "allow_fno"):
+        for k in ("allow_leverage", "allow_short", "allow_fno", "allow_banded"):
             self.assertIs(cfg[k], False, k)
         self.assertEqual(cfg["special_sessions"], {})
         self.assertEqual(cfg["charges"], {})

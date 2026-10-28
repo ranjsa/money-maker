@@ -276,7 +276,7 @@ class SkillMd(unittest.TestCase):
         self.assertGreater(len(text.splitlines()), 60)
         for w in ("₹", "MIS", "Not financial advice", "yes", "SL-M", "no bracket"):
             self.assertIn(w, text)
-        for bad in ("trader-", "Alpaca", "--weights", "New York"):
+        for bad in ("trader-", "Alp" + "aca", "--weights", "New " + "York"):
             self.assertNotIn(bad, text)
         self.assertNotRegex(text, r"\$\d")
 

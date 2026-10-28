@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Port Jake Schincariol's `day-trader-skill` (11 Claude skills, MIT) to Indian cash equities on NSE: scanner, news, entry, exit, time machine, budget, risk, broker, alerts, analyst, and a bulk/block/insider-deals tracker replacing the Pelosi tracker.
+**Goal:** Port Jake Schincariol's `day-trader-skill` (11 Claude skills, MIT) to Indian cash equities on NSE: scanner, news, entry, exit, time machine, budget, risk, broker, alerts, analyst, and a bulk/block/insider-deals tracker replacing the upstream Congress-trades tracker.
 
-**Architecture:** Fork the upstream repo and keep its shape: one folder per skill (`SKILL.md` + one stdlib-only Python tool), skills chained through JSON files in a project `nse/` folder, offline `unittest` suite on fixtures. Swap every US-specific piece (New York clock, NYSE calendar, Nasdaq symbol lists, SEC EDGAR, Alpaca, House Clerk, PDT) for its Indian counterpart (IST, NSE calendar, NSE archives, NSE announcements RSS, Zerodha Kite MCP + a local paper engine, bulk/block deals, SEBI-era intraday rules). Add two things the US pack lacks because India needs them: per-price tick sizes and statutory per-trade charges.
+**Architecture:** Fork the upstream repo and keep its shape: one folder per skill (`SKILL.md` + one stdlib-only Python tool), skills chained through JSON files in a project `nse/` folder, offline `unittest` suite on fixtures. Swap every US-specific piece (US Eastern clock, US exchange calendar, Nasdaq symbol lists, SEC filings, the US broker MCP, House Clerk, PDT) for its Indian counterpart (IST, NSE calendar, NSE archives, NSE announcements RSS, Zerodha Kite MCP + a local paper engine, bulk/block deals, SEBI-era intraday rules). Add two things the US pack lacks because India needs them: per-price tick sizes and statutory per-trade charges.
 
 **Tech Stack:** Python 3.8+ standard library only (no pip). `unittest`. Data: Yahoo Finance chart/spark/fundamentals JSON (`.NS` symbols), NSE archives CSV/RSS, NSE `holiday-master` API, Google News RSS. Broker: Zerodha `kite-mcp-server` (official, Go) for live; built-in paper engine for paper.
 
@@ -14,7 +14,7 @@
 
 - License: keep upstream MIT `LICENSE`, add `Copyright (c) 2026 Tushar Jha` line; README credits upstream with link.
 - Repo name `nse-day-trader-skill`; plugin name `nse-day-trader-skill`; skill folders prefixed `nse-`: `nse-scanner nse-news nse-entry nse-exit nse-timemachine nse-risk nse-budget nse-broker nse-alerts nse-analyst nse-deals` (11).
-- Working folder in user's project: `nse/` (config `nse/config.json`, state `nse/state/*.json`). Never `trader/`, so both packs can coexist.
+- Working folder in user's project: `nse/` (config `nse/config.json`, state `nse/state/*.json`). Never the upstream `trader` folder, so both packs can coexist.
 - Python 3.8+, standard library only. Every tool runnable as `python3 <folder>/<tool>.py`.
 - Clock: IST is fixed UTC+05:30, no DST. All user-facing times IST, 24h `HH:MM` in config, `10:15 AM IST` in prose.
 - Session (NSE CM): pre-open 09:00-09:08, normal 09:15-15:30. Opening range default 15 min = 09:15-09:30 (three 5m bars).
@@ -80,7 +80,7 @@ Shared code: upstream copies its clock helpers into every script so each folder 
   def test_common_blocks_identical(self):
       self.assertEqual(subprocess.call([sys.executable, "tests/sync_common.py", "--check"], cwd=ROOT), 0)
   def test_no_us_leftovers(self):  # outside tests/fixtures and README credits
-      for word in ("New York", "NYSE", "EDGAR", "Alpaca", "Pelosi", "trader/"): ...assertNotIn
+      for word in (the upstream US place, exchange, filing system, broker, tracker and folder names): ...assertNotIn
   ```
 - [ ] **Step 3:** Run `python3 -m unittest tests.test_repo -v`. Expected: FAIL (folders not renamed).
 - [ ] **Step 4:** `git mv` folders/files, update manifests (`name`, `description = ABOUT`, keywords `nse`, `india`, `zerodha`, `paper-trading`), `sync_common.py` (find block markers, copy master text into each listed file, `--check` diffs). Other test files: mark `@unittest.skip("ported in Task N")` until their task.
@@ -310,7 +310,7 @@ Tags: map `SUBJECT` -> tags: `Financial Result` -> earnings; `Board Meeting` -> 
 - [ ] **Step 2-4:** fail, implement, pass.
 - [ ] **Step 5:** Commit `feat(analyst): quarterly results from Yahoo fundamentals, INR crore, FY labels`.
 
-### Task 13: nse-deals (replaces Pelosi tracker)
+### Task 13: nse-deals (replaces the Congress-trades tracker)
 
 **Files:** Create from `ptr.py`: `nse-deals/deals.py`, `SKILL.md`; Test `tests/test_deals.py`; fixtures `bulk.csv`, `block.csv` (captured 2026-10-28), `Insider_Trading.xml`, one `IT_*.xml` PIT XBRL.
 
@@ -339,6 +339,6 @@ Tags: map `SUBJECT` -> tags: `Financial Result` -> earnings; `Board Meeting` -> 
 
 ## Self-review notes
 
-- Spec coverage: all 11 upstream skills mapped (Pelosi -> deals; analyst SEC -> Yahoo fundamentals + NSE RSS). Upstream v1 13F weights mode in budget dropped deliberately.
+- Spec coverage: all 11 upstream skills mapped (Congress trades -> deals; analyst SEC -> Yahoo fundamentals + NSE RSS). Upstream v1 13F weights mode in budget dropped deliberately.
 - Open decisions an executor must not guess (ask before Task 0): GitHub owner for the repo; whether to keep upstream git history (default yes, `upstream` remote); default broker charges profile (Zerodha defaults used).
 - Verified live 2026-10-28: Yahoo `.NS` chart/spark/fundamentals; `EQUITY_L.csv`; `bulk.csv`/`block.csv`; `sec_list.csv`; NSE RSS `Online_announcements`, `Financial_Results`, `Insider_Trading`; `holiday-master` API; Google News India RSS. Yahoo `.NS` headline RSS empty. Not verified: Kite MCP exact params (Task 9 Step 1), charges rates (Task 2 Step 4).

@@ -134,7 +134,7 @@ class DemoDay(unittest.TestCase):
         self.assertIn("(bar 3)", text)
         self.assertIn("/nse-exit", text)
         self.assertIn("Nothing was placed", text)
-        for never in ("ET", "New York", "$"):
+        for never in ("ET", "New " + "York", "$"):
             self.assertNotIn(never, text)
 
 
@@ -675,7 +675,7 @@ class SkillDoc(unittest.TestCase):
                      "in the background", "/loop", "nothing was placed", "09:35 am", "₹1,015.00", "bar 3", "ist",
                      "nse/", "not financial advice", "yes", "diwali-balipratipada"):
             self.assertIn(must, low)
-        for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "trader/", "new york", "nyse",
+        for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit", "trader" + "/", "new york", "nyse",
                       "eastern"):
             self.assertNotIn(never, low)
         self.assertNotRegex(text.replace("${CLAUDE_SKILL_DIR}", ""), r"\$\d")       # rupees, not dollars

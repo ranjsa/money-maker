@@ -21,6 +21,7 @@
   "allow_leverage": false,
   "allow_short": false,
   "allow_fno": false,
+  "allow_banded": false,
   "special_sessions": {},
   "charges": {}
 }

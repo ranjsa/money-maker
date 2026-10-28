@@ -120,7 +120,9 @@ Exit plan: DEMO long (NSE, MIS), Tue 2026-10-27, opening-range breakout on 5-min
 
 The 1005.25 midpoint is not a tick, so the stop drops to 1005.20. The 2R target
 is 1015.00 + 2 x 9.80 = 1034.60. nse-budget then sizes it: a ₹1,000 max loss
-per trade, with charges added to the loss at the stop, buys about 93 shares.
+per trade, with charges added to the loss at the stop, would allow 93 shares,
+but on the default ₹1,00,000 budget the 75% position cap binds first:
+₹75,000 / ₹1,015.00 = 73 shares, ₹788.66 lost at the stop with charges.
 
 ## Rules
 
