@@ -476,7 +476,12 @@ def fingerprint(row):
 def new_since(rows, state, today, first_days=FIRST_DAYS):
     """Rows not shown before. On the very first run only rows dated within first_days (None: all of them)."""
     seen = set(state.get("seen", []))
-    fresh = [r for r in rows if fingerprint(r) not in seen]
+    fresh, batch = [], set()
+    for r in rows:
+        fp = fingerprint(r)
+        if fp not in seen and fp not in batch:
+            batch.add(fp)
+            fresh.append(r)
     if state.get("last_check") is None and first_days is not None:
         cutoff = (today - _dt.timedelta(days=first_days)).isoformat()
         fresh = [r for r in fresh if (r.get("date") or r.get("to_date") or "9999") >= cutoff]
@@ -662,9 +667,15 @@ def _run(args):
     if stamps:
         latest = max(stamps)[:10]
         if (today - parse_date(latest)).days > STALE_DAYS:
-            print("NSE's insider-trading feed looks stale (latest %s); %s" % (latest, STALE_HELP))
+            print("NSE's insider-trading feed looks stale (latest %s); %s" % (latest, STALE_HELP),
+                  file=sys.stderr if args.json else sys.stdout)
     rows = []
-    for it in items[:max(0, args.limit)]:
+    uniq, links = [], set()
+    for it in items:
+        if it["link"] not in links:
+            links.add(it["link"])
+            uniq.append(it)
+    for it in uniq[:max(0, args.limit)]:
         name = it["link"].rsplit("/", 1)[-1]
         try:
             for r in parse_pit_xbrl(fetcher.get(it["link"], name)):

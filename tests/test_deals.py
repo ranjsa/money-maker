@@ -124,6 +124,12 @@ class NewSince(unittest.TestCase):
         self.assertEqual(deals.new_since([old], state, self.today), [])
 
 
+    def test_duplicate_row_in_one_batch_once(self):
+        state = {"seen": [], "last_check": None}
+        rows = self.rows[:2] + [dict(self.rows[0])]
+        self.assertEqual(len(deals.new_since(rows, state, self.today)), 2)
+
+
 class Cli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -220,6 +226,36 @@ class Cli(unittest.TestCase):
         code, out, _ = run(["insider"] + self.base)
         self.assertIn("nothing new", out.lower())
         self.assertNotIn("Shantanu Lath", out)
+
+    def test_repeated_rss_links_fetched_once(self):
+        calls = []
+        orig = deals.Fetcher.get
+
+        def spy(self, url, name):
+            calls.append(name)
+            return orig(self, url, name)
+        deals.Fetcher.get = spy
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                feed = text("Insider_Trading.xml")
+                import re
+                item = re.search(r"<item>.*?</item>", feed, re.S).group(0)
+                with open(os.path.join(d, "Insider_Trading.xml"), "w", encoding="utf-8") as fh:
+                    fh.write(feed.replace(item, item * 3, 1))
+                for n in os.listdir(DIR):
+                    if n.startswith("IT_"):
+                        with open(os.path.join(d, n), "w", encoding="utf-8") as fh:
+                            fh.write(text(n))
+                _, out, _ = run(["insider", "--offline", d, "--state", self.state, "--now", NOW])
+        finally:
+            deals.Fetcher.get = orig
+        self.assertEqual(calls.count(PIT_DIRECTOR), 1)
+        self.assertEqual(out.count("Shantanu Lath"), 1)
+
+    def test_insider_json_stale_goes_to_stderr(self):
+        _, out, err = run(["insider", "--json"] + self.base)
+        json.loads(out)
+        self.assertIn("looks stale", err)
 
     def test_insider_not_stale_when_recent(self):
         _, out, _ = run(["insider"] + self.base[:-6] + ["--now", "2026-05-04 10:00"] + self.base[-4:])
