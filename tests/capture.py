@@ -38,6 +38,7 @@ SPARK_MAX = 20
 
 YAHOO = "https://query2.finance.yahoo.com"
 NSE_EQUITY_L = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+NSE_SEC_LIST = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
 
 # Liquid names kept in the trimmed EQUITY_L.csv (plus M&M, BAJAJ-AUTO and two BE rows, see trim_equity_l).
 SCANNER_KEEP = [
@@ -48,6 +49,14 @@ SCANNER_KEEP = [
     "DRREDDY", "EICHERMOT", "HEROMOTOCO", "VEDL", "IDEA",
 ]
 
+# Rows kept in the trimmed sec_list.csv (price bands): F&O names with no fixed band, 20%, 10% and 5% EQ
+# stocks, BE/BZ trade-to-trade rows and one SME row. A synthetic DEMO row (EQ, band 20) is appended for tests.
+RISK_KEEP = [
+    "RELIANCE", "TCS", "INFY", "SBIN", "M&M", "BAJAJ-AUTO", "IDEA", "VEDL", "J&KBANK", "20MICRONS", "3MINDIA",
+    "ABDL", "ACCURACY", "21STCENMGM", "A2ZINFRA", "ABAN", "3IINFOLTD", "AARNAV", "AGSTRA", "AAKAAR",
+]
+DEMO_SEC_ROW = 'DEMO,EQ,DEMO SYNTHETIC TEST STOCK,20,"-"'
+
 REGISTRY = {
     "nse-scanner": {
         "files": [
@@ -55,6 +64,12 @@ REGISTRY = {
             (YAHOO + "/v7/finance/spark?symbols={symbols}&range=5d&interval=5m", "spark-5m-{day}.json"),
             (YAHOO + "/v8/finance/chart/{sym}?period1={p1}&period2={p2}&interval=5m", "chart-5m-{day}.json"),
             (YAHOO + "/v7/finance/spark?symbols={symbols}&range=3mo&interval=1d", "daily-spark-{day}.json"),
+        ],
+    },
+    "nse-risk": {
+        # NSE's security list with each stock's series and price band (nse-risk circuit and series checks)
+        "files": [
+            (NSE_SEC_LIST, "sec_list.csv"),
         ],
     },
     "nse-entry": {
@@ -119,6 +134,21 @@ def trim_equity_l(text):
         print("capture: not in today's EQUITY_L.csv (skipped): %s" % ", ".join(missing), file=sys.stderr)
     out = [header] + [keep[s] for s in SCANNER_KEEP if s in keep] + be
     return "\n".join(out) + "\n"
+
+
+def trim_sec_list(text):
+    """sec_list.csv -> the RISK_KEEP rows (first row per symbol) plus the synthetic DEMO row."""
+    lines = text.replace("\r", "").split("\n")
+    header, rows = lines[0], [ln for ln in lines[1:] if ln.strip()]
+    keep = {}
+    for ln in rows:
+        sym = next(csv.reader([ln]))[0].strip()
+        if sym in RISK_KEEP and sym not in keep:
+            keep[sym] = ln
+    missing = [s for s in RISK_KEEP if s not in keep]
+    if missing:
+        print("capture: not in today's sec_list.csv (skipped): %s" % ", ".join(missing), file=sys.stderr)
+    return "\n".join([header] + [keep[s] for s in RISK_KEEP if s in keep] + [DEMO_SEC_ROW]) + "\n"
 
 
 def eq_symbols(csv_text):
@@ -282,6 +312,8 @@ def capture(skill, day, outdir, pause):
             if name == "EQUITY_L.csv":
                 text = trim_equity_l(text)
                 symbols = eq_symbols(text)
+            elif name == "sec_list.csv":
+                text = trim_sec_list(text)
             written.append(write_fixture(outdir, name, text))
             continue
         if "-5m-" in name:

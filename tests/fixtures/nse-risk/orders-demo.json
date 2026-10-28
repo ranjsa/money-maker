@@ -1,0 +1,62 @@
+{
+  "created_by": "nse-budget",
+  "created_at": "2026-10-27T04:06:00Z",
+  "status": "proposed",
+  "paper": true,
+  "note": "Proposals only. Nothing is placed until nse-risk passes each order and you say yes to it in the chat.",
+  "source": "nse/plan.json (DEMO orb 2026-10-27)",
+  "orders": [
+    {
+      "group": "DEMO-2026-10-27-1",
+      "legs": [
+        {
+          "role": "entry",
+          "exchange": "NSE",
+          "tradingsymbol": "DEMO",
+          "transaction_type": "BUY",
+          "quantity": 73,
+          "product": "MIS",
+          "order_type": "MARKET",
+          "variety": "regular",
+          "validity": "DAY"
+        },
+        {
+          "role": "stop",
+          "exchange": "NSE",
+          "tradingsymbol": "DEMO",
+          "transaction_type": "SELL",
+          "quantity": 73,
+          "product": "MIS",
+          "order_type": "SL-M",
+          "trigger_price": 1005.2,
+          "variety": "regular",
+          "validity": "DAY"
+        },
+        {
+          "role": "target",
+          "exchange": "NSE",
+          "tradingsymbol": "DEMO",
+          "transaction_type": "SELL",
+          "quantity": 73,
+          "product": "MIS",
+          "order_type": "LIMIT",
+          "price": 1034.6,
+          "variety": "regular",
+          "validity": "DAY"
+        }
+      ],
+      "why": "opening-range breakout on DEMO: 73 shares, bound by your position cap (73 x ₹9.80 = ₹715.40 plus ₹73.26 charges = ₹788.66 at the stop)",
+      "plan": {
+        "entry": 1015.0,
+        "stop": 1005.2,
+        "target": 1034.6,
+        "risk_per_share": 9.8,
+        "charges": 73.26,
+        "max_loss": 788.66,
+        "setup": "orb",
+        "entry_time": "09:35 AM",
+        "flat_by": "15:10"
+      }
+    }
+  ]
+}
