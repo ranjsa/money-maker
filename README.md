@@ -195,10 +195,11 @@ adviser if you need advice.
 
 **Most individual traders lose money.** SEBI studies found it, again and
 again. SEBI's January 2023 study of FY22 found about 89 % of individual F&O
-traders lost money. SEBI's September 2024 study of FY22 to FY24 found about 9
-in 10 individual F&O traders (93 %) lost money. SEBI's July 2024 study of
-intraday cash-segment trading found about 70 % of individual intraday traders
-made losses in FY23. This pack trades cash equity intraday, the last group.
+traders lost money. SEBI's September 2024 study of FY22 to FY24 (press release
+PR 37/2024) found about 9 in 10 individual F&O traders (93 %) lost money.
+SEBI's July 2024 study of intraday cash-segment trading (press release PR
+13/2024) found 71 % (7 in 10) of individual intraday traders made losses in
+FY23. This pack trades cash equity intraday, the last group.
 
 **No trade goes through until you say yes.** Only `/nse-broker` can lead to
 an order, and only after `/nse-risk` passes that exact group and you type

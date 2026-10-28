@@ -151,8 +151,9 @@ max loss.
 
 `why` and `plan` are notes for nse-risk and nse-broker. They are never sent
 to the broker. With a stop ₹1,200 away instead, no order is written. If the
-cap is lifted to 100% with no buffer, the max loss limit decides and the size
-is the 93 shares above.
+cap is lifted to 100% with no buffer, the ₹80,000 max order still binds at 78
+shares; only with the max order raised to ₹1,00,000 as well does the max loss
+limit decide, at the 93 shares above (₹991.82 at the stop with charges).
 
 ## Rules
 

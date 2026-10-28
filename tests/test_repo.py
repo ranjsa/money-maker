@@ -78,7 +78,9 @@ class Repo(unittest.TestCase):
                      "https://github.com/tusharjha/nse-day-trader-skill install skill",
                      "/plugin marketplace add tusharjha/nse-day-trader-skill",
                      "/plugin install nse-day-trader-skill@nse-day-trader-skill",
-                     "## Fine print"):
+                     "## Fine print",
+                     "71 % (7 in 10) of individual intraday traders", "PR 13/2024", "PR 37/2024",
+                     "9 in 10 individual F&O traders (93 %)"):
             self.assertIn(line, readme)
         for s in SKILLS:
             self.assertIn("/" + s, readme, s)
