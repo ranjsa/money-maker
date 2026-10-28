@@ -318,6 +318,15 @@ ENTRY_WINDOW = ("09:30", "14:45")   # nse-risk's defaults for no_entries_before 
 REPLAY_FILE = "paper-replay.json"
 
 
+def real_now():
+    """The real clock, aware UTC (tests pin it). A recorded yes is only played on the day it was given."""
+    return _dt.datetime.now(_UTC).replace(microsecond=0)
+
+
+def _same_file(a, b):
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
 class PaperError(Exception):
     pass
 
@@ -670,6 +679,9 @@ def cmd_run(a):
         raise PaperError("the config says \"broker\": \"kite\" (a live account): the paper engine only plays paper "
                          "groups. Use --approved-at for a replay that is never counted")
     out_path = (a.replay_state or os.path.join(os.path.dirname(a.state) or ".", REPLAY_FILE)) if replay else a.state
+    if replay and any(_same_file(out_path, p) for p in (a.state, os.path.join("nse", "state", "broker.json"))):
+        raise PaperError("--replay-state %s is the broker state (broker.json): a replay is never counted, so it "
+                         "must go to its own file (default: %s next to --state)" % (out_path, REPLAY_FILE))
     if replay:
         print("REPLAY (--approved-at): a what-if on past bars, written to %s only. Not a trade, not counted by "
               "nse-risk, and nothing goes to broker.json." % out_path)
@@ -677,6 +689,12 @@ def cmd_run(a):
     fp = fingerprint(group)
     approved = _approval_time(a, state if replay else load_state(a.state), fp)
     local = to_ist(approved)
+    if not replay:
+        today = to_ist(real_now()).date()
+        if local.date() != today:
+            raise PaperError("the recorded yes for this group is from %s, not today (%s IST): a yes counts only on "
+                             "the day it was given. Ask the user again (ticket.py show, then approve), or replay "
+                             "that day with --approved-at" % (local.date().isoformat(), today.isoformat()))
     day = local.date()
     ok, why = trading_day(day, cfg)
     if not ok:
@@ -747,7 +765,7 @@ def cmd_run(a):
         print("  The paper position is still open: run this command again later today to finish it.")
     write_json(out_path, state)
     print("Recorded in %s. A paper fill is a model on past bars: real fills can be worse (slippage, partial "
-          "fills, a locked circuit). Not financial advice." % a.state)
+          "fills, a locked circuit). Not financial advice." % out_path)
     return 0
 
 

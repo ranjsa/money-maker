@@ -43,6 +43,9 @@ class PaperRun(unittest.TestCase):
         self.replay = os.path.join(self.d, "state", "paper-replay.json")
         self.cfg = os.path.join(self.d, "config.json")
         self.saved_open = paper._open_url
+        # the real clock for a recorded yes: the end of the fixture's session (Gap fix: the yes must be today)
+        self.saved_now = paper.real_now if hasattr(paper, "real_now") else None
+        paper.real_now = lambda: datetime.datetime(2026, 10, 27, 10, 0, tzinfo=datetime.timezone.utc)
 
         def no_network(*a, **k):
             raise AssertionError("paper.py touched the network with --offline")
@@ -50,6 +53,10 @@ class PaperRun(unittest.TestCase):
 
     def tearDown(self):
         paper._open_url = self.saved_open
+        if self.saved_now is None:
+            del paper.real_now
+        else:
+            paper.real_now = self.saved_now
         shutil.rmtree(self.d)
 
     def set_bar(self, hhmm, o, h, l, c):
@@ -315,6 +322,35 @@ class PaperRun(unittest.TestCase):
         code, _, err = self.go(approved="2026-10-27 15:12")
         self.assertEqual(code, 1)
         self.assertIn("flat_by", err)
+
+    # ------------------------------------------------ small items
+    def test_a_replay_says_it_recorded_in_the_replay_file(self):
+        code, text, err = self.go()
+        self.assertEqual(code, 0, err)
+        last = text.strip().splitlines()[-1]
+        self.assertIn("Recorded in %s." % self.replay, last)
+        self.assertNotIn(self.state, last)
+
+    def test_a_replay_state_that_is_broker_json_is_refused(self):
+        self.approve_at("2026-10-27T09:35:00+05:30")
+        with open(self.state, encoding="utf-8") as fh:
+            before = fh.read()
+        default = os.path.join("nse", "state", "broker.json")
+        for target in (self.state, os.path.join(self.d, "state", ".", "broker.json"), default):
+            code, _, err = self.go("--replay-state", target)
+            self.assertEqual(code, 1, target)
+            self.assertIn("--replay-state", err, target)
+            with open(self.state, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), before, target)
+        self.assertFalse(os.path.exists(default))
+
+    def test_a_recorded_yes_from_another_day_is_refused(self):
+        self.approve_at("2026-10-26T09:35:00+05:30")
+        code, _, err = self.go(approved=None)
+        self.assertEqual(code, 1)
+        self.assertIn("2026-10-26", err)
+        self.assertIn("today", err)
+        self.assertEqual(len(self.records(self.state)), 1)
 
     def test_offline_never_touches_the_network(self):
         # setUp replaced the fetcher with one that raises; a full run must still work

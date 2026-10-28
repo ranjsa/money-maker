@@ -451,6 +451,84 @@ class LossAndLimits(unittest.TestCase):
         st = {"orders": [placed("T%d" % i, kind="exit", max_loss=None, legs=1) for i in range(8)]}
         self.assertIn("daily limit: 8 orders placed today", reasons(run(demo(), state=st)))
 
+    # ------------------------------------------------ Gap 2: an approved group not yet placed is an open entry
+    def approved(self, sym, fp=None, max_loss=500.0, legs=3, value=None, status="approved", at="10:05"):
+        r = {"group": "%s-%s-1" % (sym, TODAY), "fingerprint": fp or "fp-" + sym, "symbol": sym, "side": "BUY",
+             "qty": 20, "kind": "entry", "status": status, "date": TODAY, "at": "%sT%s:00+05:30" % (TODAY, at),
+             "max_loss": max_loss, "legs": legs}
+        if value is not None:
+            r["value_inr"] = value
+        return r
+
+    def test_an_approval_counts_as_a_trade(self):
+        res = run(demo(), cfg(max_trades_per_day=1), state={"orders": [self.approved("AAA")]})
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("trades: 1 entries placed today plus 0 passed earlier in this batch, your limit is 1 a day",
+                      reasons(res))
+        self.assertEqual(res["today"]["entries_placed"], 1)
+        self.assertEqual(res["today"]["approved_open"], 1)
+        self.assertIn("approved", " ".join(res["warnings"]))
+
+    def test_a_declined_or_refused_approval_does_not_count(self):
+        for st in ("declined", "denied", "failed"):
+            recs = [self.approved("AAA"), dict(self.approved("AAA", at="10:06"), status=st)]
+            res = run(demo(), cfg(max_trades_per_day=1), state={"orders": recs})
+            self.assertEqual(verdicts(res), ["PASS"], st)
+            self.assertEqual(res["today"]["entries_placed"], 0, st)
+            self.assertNotIn("approved_open", res["today"], st)
+
+    def test_an_approval_then_its_placement_counts_once(self):
+        a = self.approved("AAA")
+        p = dict(placed("AAA", max_loss=500.0), fingerprint=a["fingerprint"], at=TODAY + "T10:06:00+05:30")
+        res = run(demo(), cfg(max_trades_per_day=2), state={"orders": [a, p]})
+        self.assertEqual(verdicts(res), ["PASS"])
+        self.assertEqual(res["today"]["entries_placed"], 1)
+        self.assertEqual(res["today"]["loss_at_risk"], 500.0)
+        self.assertEqual(res["today"]["orders_placed"], 1)
+        res = run(demo(), cfg(max_trades_per_day=1), state={"orders": [a, p]})
+        self.assertIn("trades: 1 entries placed today", reasons(res))
+
+    def test_the_daily_loss_sums_an_approvals_max_loss(self):
+        st = {"orders": [placed("AAA", max_loss=1200), self.approved("BBB", max_loss=1100)]}
+        res = run(demo(), state=st)
+        self.assertEqual(res["today"]["loss_at_risk"], 2300.0)
+        self.assertIn("daily loss: ₹2,300.00 already at risk today plus ₹788.66 for this one = ₹3,088.66, over your "
+                      "₹3,000.00 daily loss limit", reasons(res))
+
+    def test_an_approval_counts_its_legs_toward_the_order_limit(self):
+        st = {"orders": [self.approved("AAA", legs=3), self.approved("BBB", legs=3)]}
+        res = run(demo(), cfg(max_orders_per_day=8), state=st)
+        self.assertEqual(res["today"]["orders_placed"], 6)
+        self.assertIn("daily limit: 6 orders placed today plus 0 passed earlier in this batch, this group is 3 more",
+                      reasons(res))
+
+    def test_an_approval_is_a_duplicate(self):
+        res = run(demo(), state={"orders": [self.approved("DEMO")]})
+        self.assertIn("duplicate: a BUY DEMO was already placed today", reasons(res))
+
+    def test_an_approval_holds_its_cash_and_position(self):
+        # 100,000 budget, 30% buffer: DEMO alone leaves 25,905 (blocked); with 20,000 already approved
+        # elsewhere, a 20% buffer blocks too
+        st = {"orders": [self.approved("AAA", value=20000.0)]}
+        self.assertEqual(verdicts(run(demo(), cfg(cash_buffer_pct=20))), ["PASS"])
+        res = run(demo(), cfg(cash_buffer_pct=20), state=st)
+        self.assertIn("cash: leaves ₹5,905.00 cash", reasons(res))
+        st = {"orders": [self.approved("DEMO", value=20000.0, fp="fp-other-demo")]}
+        res = run(demo(), cfg(max_position_pct=90), state=st)
+        self.assertIn("position: DEMO would be ₹94,095.00", reasons(res))
+
+    def test_a_filled_approval_no_longer_holds_cash(self):
+        # the fill moved it into the portfolio: holding it again would count the cash twice
+        a = self.approved("AAA", value=20000.0)
+        f = {"status": "filled", "leg": "entry", "fingerprint": a["fingerprint"], "symbol": "AAA", "side": "BUY",
+             "qty": 20, "price": 1000.0, "date": TODAY, "at": TODAY + "T10:07:00+05:30"}
+        self.assertEqual(verdicts(run(demo(), cfg(cash_buffer_pct=20), state={"orders": [a, f]})), ["PASS"])
+
+    def test_an_approval_from_yesterday_does_not_count(self):
+        y = dict(self.approved("AAA"), date="2026-10-26", at="2026-10-26T10:05:00+05:30")
+        res = run(demo(), cfg(max_trades_per_day=1), state={"orders": [y]})
+        self.assertEqual(verdicts(res), ["PASS"])
+
     def test_live_account_warns(self):
         # I5: LIVE is "broker": "kite" (with "paper": false to match)
         res = run(demo(), cfg(broker="kite", paper=False))

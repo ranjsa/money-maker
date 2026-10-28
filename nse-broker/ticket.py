@@ -279,7 +279,8 @@ YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
 # "stop" is not here: "yes 73 DEMO stop 1005.2" names the group by its stop price.
 DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "but", "maybe", "later", "hold", "unless", "if",
-               "never", "mind", "scratch", "actually", "nah", "nope", "hmm", "hang", "abort", "forget"}
+               "never", "mind", "scratch", "actually", "nah", "nope", "hmm", "hang", "abort", "forget",
+               "nevermind", "nvm"}
 ENTRY_WINDOW = ("09:30", "14:45")   # nse-risk's defaults for no_entries_before / no_entries_after
 NUM_RE = re.compile(r"(?<![A-Za-z&\-])\d[\d,]*(?:\.\d+)?(?![A-Za-z&\-])")
 
@@ -784,6 +785,15 @@ def _clock(a):
     return now, to_ist(now).date().isoformat()
 
 
+def _real_clock_only(a, what):
+    """A record's "at" is the real clock: --now would let a backdated record hide from the
+    stale-verdict check (after_trades). Refuse it before anything is written."""
+    if getattr(a, "now", None):
+        raise TicketError("%s records on the real clock: --now cannot date it (a backdated record would hide "
+                          "from the stale risk check; to play a past session, use paper.py run --approved-at, "
+                          "a replay that is never counted)" % what)
+
+
 def _groups(path):
     doc = read_json(path, "orders file (run nse-budget, or ticket.py flatten, first)")
     groups = doc.get("orders", doc) if isinstance(doc, dict) else doc
@@ -852,11 +862,16 @@ def cmd_approve(a):
               "estimate %s, so the daily loss may be undercounted. Run nse-risk again to measure it."
               % (inr(loss) if loss is not None else "(none)"))
     main = main_leg(group)
+    value = _f((v or {}).get("value_inr"))
+    if value is None:
+        entry_px = _f((group.get("plan") or {}).get("entry")) or _f(main.get("price"))
+        value = round(group_qty(group) * entry_px, 2) if entry_px and group_qty(group) else None
     rec = {"at": ist_iso(now), "date": today, "index": a.index, "group": group.get("group"),
            "fingerprint": fingerprint(group), "symbol": group_symbol(group),
            "side": str(main.get("transaction_type", "")).upper(), "qty": group_qty(group),
            "kind": (v or {}).get("kind") or ("entry" if leg(group, "entry") else "exit"), "max_loss": loss,
-           "plan_max_loss": plan_loss, "stop": stop, "plain": plain(group), "status": "approved", "reply": a.reply,
+           "plan_max_loss": plan_loss, "stop": stop, "legs": len(role_legs(group)), "value_inr": value,
+           "plain": plain(group), "status": "approved", "reply": a.reply,
            "paper": broker == "paper", "broker": broker}
     state["orders"].append(rec)
     write_json(a.state, state)
@@ -881,6 +896,7 @@ def cmd_approve(a):
 
 
 def cmd_decline(a):
+    _real_clock_only(a, "decline")
     groups, cfg, risk, state, today, now = _load(a)
     group = _pick(groups, a.index)
     rec = {"at": ist_iso(now), "date": today, "index": a.index, "group": group.get("group"),
@@ -893,6 +909,7 @@ def cmd_decline(a):
 
 
 def cmd_result(a):
+    _real_clock_only(a, "result")
     groups, cfg, risk, state, today, now = _load(a)
     group = _pick(groups, a.index)
     fp = fingerprint(group)
@@ -937,6 +954,7 @@ def _sibling_order_id(state, fp, role):
 
 
 def cmd_fill(a):
+    _real_clock_only(a, "fill")
     cfg = read_json(a.config, "config", required=False) or {}
     groups = _groups(a.orders)
     match = [g for g in groups if g.get("group") == a.group]
@@ -1087,7 +1105,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
 
     def clock(p):
-        p.add_argument("--now", help="date the records as this IST time, e.g. \"2026-10-27 10:15\"")
+        p.add_argument("--now", help="pin the clock to this IST time, e.g. \"2026-10-27 10:15\" (show, flatten "
+                       "and log only: approve, decline, result and fill record on the real clock and refuse it)")
 
     def common(p):
         p.add_argument("--orders", default="nse/orders.json")

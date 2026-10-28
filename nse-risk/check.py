@@ -673,6 +673,27 @@ def placed_today(state, today):
     return [r for r in broker_records(state) if r.get("status") == "placed" and rec_day(r) == today]
 
 
+# a later record that ends an approval's wait: it was placed (then the placed record counts) or it never will be
+APPROVAL_ENDS = ("placed", "denied", "failed", "declined")
+
+
+def approved_open(state, today):
+    """Today's yeses (nse-broker "approved") with no later placed, denied, failed or declined record for
+    the same group fingerprint: open entries that count toward the day's limits like a placed one.
+    A newer yes for the same group replaces the older one, so a group counts once."""
+    recs = [r for r in broker_records(state) if rec_day(r) == today]
+    out = []
+    for i, r in enumerate(recs):
+        if r.get("status") != "approved":
+            continue
+        fp = r.get("fingerprint")
+        later = [x for x in recs[i + 1:] if fp is not None and x.get("fingerprint") == fp]
+        if any(x.get("status") in APPROVAL_ENDS or x.get("status") == "approved" for x in later):
+            continue
+        out.append(dict(r, _filled=any(x.get("status") == "filled" for x in later)))
+    return out
+
+
 # ---------------------------------------------------------------- one group's legs
 
 def _article(t):
@@ -781,7 +802,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     chg_cfg = c.get("charges") or {}
     acct, top_warn = account(c, portfolio, prices)
     blocked = {str(b).strip().upper() for b in c.get("blocked") or []}
-    done_today = placed_today(state, today)
+    waiting = approved_open(state, today)
+    done_today = placed_today(state, today) + waiting
     orders_today = sum(rec_orders(r) for r in done_today)
     entries_today = [r for r in done_today if rec_is_entry(r)]
     loss_today = Decimal("0.00")
@@ -793,6 +815,25 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         else:
             loss_today += ml
     placed_keys = {(rec_symbol(r), rec_side(r)) for r in done_today}
+    if waiting:
+        top_warn.append("%d approved group%s not placed yet (%s) count%s toward today's trades, orders, loss and "
+                        "cash until placed or declined (ticket.py result or decline)"
+                        % (len(waiting), "" if len(waiting) == 1 else "s",
+                           ", ".join("%s %s" % (rec_side(r), rec_symbol(r)) for r in waiting),
+                           "s" if len(waiting) == 1 else ""))
+    for r in waiting:
+        # hold the cash a yes is about to spend (no shares: nothing is bought until the fill); a fill already
+        # moved it into the portfolio, so a filled one holds nothing more
+        val = _d(r.get("value_inr"))
+        if r["_filled"] or not rec_is_entry(r) or rec_side(r) != "BUY":
+            continue
+        if val is None:
+            top_warn.append("the approved %s %s has no order value in the log; its cash is not held back"
+                            % (rec_side(r), rec_symbol(r)))
+            continue
+        sym = rec_symbol(r)
+        acct["cash"] -= val
+        acct["values"][sym] = acct["values"].get(sym, Decimal("0.00")) + val
     win_reasons, win_warns = window_check(now_utc, c)
     cal = calendar_warning(local.date(), c)
     if cal:
@@ -1151,8 +1192,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         "block": sum(1 for r in results if r["verdict"] == "BLOCK"),
         "warnings": top_warn,
         "cash_after": _fl(acct["cash"]),
-        "today": {"orders_placed": orders_today, "entries_placed": len(entries_today),
-                  "loss_at_risk": _fl(loss_today)},
+        "today": dict({"orders_placed": orders_today, "entries_placed": len(entries_today),
+                       "loss_at_risk": _fl(loss_today)}, **({"approved_open": len(waiting)} if waiting else {})),
     }
 
 
@@ -1235,7 +1276,8 @@ def write_verdicts(path, res, orders_file):
     for r in res["results"]:
         verdicts[r["fingerprint"]] = {"group": r["group"], "date": res["date"], "verdict": r["verdict"],
                                       "kind": r["kind"], "symbol": r["symbol"], "side": r["side"], "qty": r["qty"],
-                                      "max_loss": r["max_loss"], "reasons": r["reasons"], "checked_at": checked_at,
+                                      "max_loss": r["max_loss"], "value_inr": r.get("value_inr"),
+                                      "reasons": r["reasons"], "checked_at": checked_at,
                                       "now_ist": res["now_ist"]}
     rec = dict(res)
     rec["checked_at"] = checked_at

@@ -105,6 +105,13 @@ class ExplicitYes(unittest.TestCase):
                   "yes 73 DEMO if it dips", "yes 73 DEMO, wait", "yes 73 DEMO at 1000"):
             self.assertFalse(self.yes(r), r)
 
+    def test_nevermind_and_nvm_are_doubts(self):
+        for r in ("yes 73 DEMO nevermind", "yes 73 DEMO, nvm", "Yes 73 DEMO... NVM", "yes nevermind 73 DEMO"):
+            g = demo()
+            ok, why = ticket.parse_yes(r, g, [g])
+            self.assertFalse(ok, r)
+            self.assertIn("doubt", why, r)
+
     def test_a_two_group_batch(self):
         g1, g2 = demo(), other()
         batch = [g1, g2]
@@ -638,6 +645,74 @@ class Flow(unittest.TestCase):
         code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
         self.assertEqual(code, 0, text)
         self.assertEqual(self.state_doc()["orders"][0]["at"], "2026-10-27T10:30:00+05:30")
+
+    # ------------------------------------------------ Gap 1: every record is stamped on the real clock
+    def test_result_fill_and_decline_refuse_a_pinned_clock(self):
+        self.set_broker("kite")
+        write_risk(self.risk, [demo()])
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 0)
+        with open(self.state, encoding="utf-8") as fh:
+            before = fh.read()
+        for argv in (self.args("result", "--index", "1", "--leg", "entry", "--status", "placed",
+                               "--now", "2026-10-27 10:21"),
+                     self.args("decline", "--index", "1", "--reply", "no", "--now", "2026-10-27 10:21"),
+                     ["fill", "--group", GROUP, "--leg", "entry", "--price", "1015", "--orders", self.orders,
+                      "--config", self.cfg, "--state", self.state, "--portfolio", self.pf,
+                      "--now", "2026-10-27 10:21"]):
+            code, text, err = run(argv)
+            self.assertEqual(code, 1, argv)
+            self.assertIn("--now", err, argv)
+            self.assertIn("real clock", err, argv)
+            with open(self.state, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), before, argv)
+        self.assertFalse(os.path.exists(self.pf))
+
+    def test_a_backdated_placement_cannot_hide_from_the_stale_check(self):
+        # 10:20 approve A (RELIANCE); 10:25 nse-risk; 10:30 result A --now 10:21 is refused
+        groups = self.two_groups()
+        self.set_broker("kite")
+        t = self.at_clock("2026-10-27 10:20")
+        write_risk(self.risk, groups, checked_at=t.strftime("%Y-%m-%dT%H:%M:%SZ"), now_ist="2026-10-27 10:20")
+        self.assertEqual(run(self.args("approve", "--index", "2", "--reply", "yes 20 RELIANCE"))[0], 0)
+        t = self.at_clock("2026-10-27 10:25")
+        write_risk(self.risk, groups, checked_at=t.strftime("%Y-%m-%dT%H:%M:%SZ"), now_ist="2026-10-27 10:25")
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertIn("READY: nse-risk PASS at 10:25", text)
+        self.at_clock("2026-10-27 10:30")
+        code, _, err = run(self.args("result", "--index", "2", "--leg", "entry", "--status", "placed",
+                                     "--now", "2026-10-27 10:21"))
+        self.assertEqual(code, 1)
+        self.assertIn("--now", err)
+        self.assertEqual([r["status"] for r in self.state_doc()["orders"]], ["approved"])
+        # the same placement on the real clock makes B's 10:25 PASS stale
+        code, text, err = run(self.args("result", "--index", "2", "--leg", "entry", "--status", "placed"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.state_doc()["orders"][-1]["at"], "2026-10-27T10:30:00+05:30")
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertEqual(code, 1, text)
+        self.assertIn("RECHECK", text)
+        self.assertNotIn("READY: nse-risk PASS", text)
+
+    def test_an_approval_carries_its_leg_count_and_value(self):
+        write_risk(self.risk, [demo()])
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 0)
+        rec = self.state_doc()["orders"][0]
+        self.assertEqual((rec["legs"], rec["value_inr"]), (3, 74095.0))
+
+    # ------------------------------------------------ Gap 2: nse-risk counts an approval not yet placed
+    def test_the_recheck_after_an_approval_counts_it(self):
+        groups = self.two_groups()
+        write_risk(self.risk, groups)
+        self.assertEqual(run(self.args("approve", "--index", "2", "--reply", "yes 20 RELIANCE"))[0], 0)
+        self.assertIn("RECHECK", run(self.args("show", "--index", "1"))[1])
+        c = {"budget": 1000000, "max_trades_per_day": 1}
+        res = check.check([groups[0]], c, state=self.state_doc(), today=ist_today(), now=real_now())
+        # (no price bands here, so the circuit check blocks too: the trades reason is the one under test)
+        self.assertIn("trades: 1 entries placed today", " ".join(res["results"][0]["reasons"]))
+        self.assertEqual(res["today"]["loss_at_risk"], 250.0)
+        run(self.args("decline", "--index", "2", "--reply", "no"))
+        res = check.check([groups[0]], c, state=self.state_doc(), today=ist_today(), now=real_now())
+        self.assertEqual(res["today"]["entries_placed"], 0)
 
     # ------------------------------------------------ I5: broker and paper must agree
     def set_cfg(self, **over):

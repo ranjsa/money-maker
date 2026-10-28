@@ -100,8 +100,8 @@ with `"broker": "kite"`.
 `paper.py run --approved-at "YYYY-MM-DD HH:MM"` is a REPLAY: a what-if on a
 past session that writes `nse/state/paper-replay.json` only, never
 `broker.json`, and prints REPLAY. It is not a trade and nse-risk never counts
-it. `approve` itself always stamps the yes on the real clock and refuses
-`--now`. Run during
+it. `approve`, `decline`, `result` and `fill` always stamp the real clock and
+refuse `--now`. Approvals count toward nse-risk's limits until declined or placed. Run during
 the day, the position stays open until the bars reach a fill or flat_by:
 `paper.py status` lists it, and the same `run` command finishes it later.
 `--offline DIR` reads saved bars and never touches the network. A paper fill

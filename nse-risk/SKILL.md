@@ -107,6 +107,7 @@ How the numbers work:
   GST) = ₹788.66. On a tight stop the charges can be a big part of the risk.
 - **Daily loss** counts the full max loss of every entry placed today, win or
   lose, as nse-broker logged it.
+- **Approvals count toward limits until declined or placed** (trades, orders, daily loss, cash, duplicates).
 - **The circuit band**: a stock locked at its upper circuit has buyers only,
   so a long bought near it may not be sellable at your stop. The check uses
   NSE's band from `sec_list.csv` and the previous close from
