@@ -720,11 +720,10 @@ def entry_filled_fps(state, today):
             if rec_day(r) == today and is_entry_fill(r) and r.get("fingerprint") is not None}
 
 
-def held_entries(state, today, skip=()):
+def held_entries(state, today):
     """[(record, unfilled fraction)] for today's BUY entries whose cash is still on its way out: an open
     yes (approved_open), or a placed entry with no later failed, denied, declined or cancelled record.
-    A fill moves its shares into the portfolio, so only the unfilled rest is held. Fingerprints in
-    skip are left out."""
+    A fill moves its shares into the portfolio, so only the unfilled rest is held."""
     recs = [r for r in broker_records(state) if rec_day(r) == today]
     out = _open_approvals(recs)
     for i, r in enumerate(recs):
@@ -739,7 +738,7 @@ def held_entries(state, today, skip=()):
     for i in out:
         r = recs[i]
         fp = r.get("fingerprint")
-        if fp in skip or not rec_is_entry(r) or rec_side(r) != "BUY":
+        if not rec_is_entry(r) or rec_side(r) != "BUY":
             continue
         filled = sum(_f(x.get("qty")) or 0 for x in recs[i + 1:]
                      if fp is not None and x.get("fingerprint") == fp and is_entry_fill(x))
@@ -900,7 +899,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                             "the daily loss" % (rec_side(r), rec_symbol(r)))
         else:
             loss_today += ml
-    placed_keys = {(rec_symbol(r), rec_side(r)) for r in done_today if r.get("fingerprint") not in mine}
+    # (symbol, side) -> the fingerprints of today's approved or placed records for it: a group is a
+    # duplicate when any of them is another group's (its own yes is not its own duplicate)
+    placed_keys = {}
+    for r in done_today:
+        placed_keys.setdefault((rec_symbol(r), rec_side(r)), set()).add(r.get("fingerprint"))
     own = {}
     for fp in mine:
         rs = [r for r in done_today if r.get("fingerprint") == fp]
@@ -1254,7 +1257,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         key = (sym, side)
         if key in seen:
             later.append("duplicate: a second %s %s in this batch" % (side, sym))
-        if key in placed_keys:
+        if placed_keys.get(key, set()) - ({fingerprint(o)} if fingerprint(o) in mine else set()):
             later.append("duplicate: a %s %s was already approved or placed today" % (side, sym))
         cap_n = int(c.get("max_orders_per_day") or 0)
         if cap_n and day_orders + batch_orders + len(legs) > cap_n:

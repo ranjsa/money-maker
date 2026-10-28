@@ -607,6 +607,26 @@ class LossAndLimits(unittest.TestCase):
         self.assertEqual(verdicts(res), ["PASS", "BLOCK"])
         self.assertIn("trades: 1 entries placed today plus 0 passed earlier in this batch", reasons(res, 1))
 
+    def test_another_group_for_the_symbol_is_a_duplicate_in_any_order(self):
+        # round 3: A's yes stands, D is a different DEMO group; D is a duplicate before or after A
+        a = demo()
+        d = demo()
+        d["group"] = "DEMO-2026-10-27-2"
+        for lg in d["legs"]:
+            lg["quantity"] = 50
+        dup = "duplicate: a BUY DEMO was already approved or placed today"
+        for st in ({"orders": [self.mine_approved()]},
+                   {"orders": [self.mine_approved(), self.mine_approved(status="placed", at="10:06", leg="entry")]}):
+            self.assertEqual(verdicts(run([a], state=st)), ["PASS"], reasons(run([a], state=st)))
+            self.assertIn(dup, reasons(run([d], state=st)))
+            res = run([d, a], cfg(budget=1000000), state=st)      # enough cash: the duplicate is the reason
+            self.assertEqual(verdicts(res)[0], "BLOCK")
+            self.assertEqual(res["results"][0]["reasons"], [dup])
+            res = run([a, d], state=st)
+            self.assertEqual(verdicts(res), ["PASS", "BLOCK"])
+            self.assertIn("duplicate: a second BUY DEMO in this batch", reasons(res, 1))
+            self.assertIn(dup, reasons(res, 1))
+
     def test_a_failed_stop_or_target_does_not_release_the_entry_hold(self):
         base = {"group": "AAA-1", "fingerprint": "fp-AAA", "symbol": "AAA", "side": "BUY", "qty": 73,
                 "kind": "entry", "date": TODAY, "max_loss": 500.0, "legs": 3, "value_inr": 20000.0}
