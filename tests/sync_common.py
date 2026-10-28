@@ -12,6 +12,7 @@ Usage:
 A block the master does not carry yet is skipped, and so is a target file that does not exist.
 """
 
+import ast
 import os
 import sys
 
@@ -50,6 +51,16 @@ def find(text, name):
     return i, j + len(end)
 
 
+def insert_at(text):
+    """Character offset just after the module's last top-level import (0 if it has none)."""
+    tree = ast.parse(text)
+    ends = [n.end_lineno for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    if not ends:
+        return 0
+    lines = text.split("\n")
+    return len("\n".join(lines[:max(ends)]))
+
+
 def read(rel):
     with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
         return fh.read()
@@ -59,6 +70,7 @@ def main(argv):
     check = "--check" in argv
     master = read(MASTER)
     bad = []
+    inserted = set()
     for name, targets in BLOCKS:
         span = find(master, name)
         if span is None:
@@ -71,6 +83,11 @@ def main(argv):
             got = find(text, name)
             if got is None:
                 bad.append("%s: %s block missing" % (rel, name))
+                if not check:
+                    at = insert_at(text)
+                    with open(os.path.join(ROOT, rel), "w", encoding="utf-8") as fh:
+                        fh.write(text[:at] + "\n\n" + want + text[at:])
+                    inserted.add(bad[-1])
                 continue
             if text[got[0]:got[1]] == want:
                 continue
@@ -84,7 +101,7 @@ def main(argv):
             return 1
         print("common blocks identical")
         return 0
-    print("\n".join("fixed " + b for b in bad) if bad else "nothing to sync")
+    print("\n".join(("inserted " if b in inserted else "updated ") + b for b in bad) if bad else "nothing to sync")
     return 0
 
 

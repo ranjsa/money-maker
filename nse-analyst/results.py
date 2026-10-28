@@ -50,6 +50,204 @@ import time
 import urllib.error
 import urllib.request
 
+# --- nse common: begin ---
+# Shared by every tool and kept identical by tests/sync_common.py. Edit it in nse-exit/exit.py only.
+# IST clock, NSE calendar, tick sizes, INR formatting, Yahoo symbols. Imports are aliased so they
+# never rebind a name the tool itself uses.
+import datetime as _dt
+import re as _re
+import urllib.parse as _urlparse
+from decimal import Decimal as _Dec, ROUND_CEILING as _CEIL, ROUND_FLOOR as _FLOOR, ROUND_HALF_UP as _HALF_UP
+
+IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+_UTC = _dt.timezone.utc
+PREOPEN = _dt.time(9, 0)
+OPEN = _dt.time(9, 15)
+CLOSE = _dt.time(15, 30)
+CALENDAR_YEARS = (2026,)
+# NSE CM trading holidays (weekdays only), from nseindia.com holiday-master?type=trading, fetched 2026-10-28.
+NSE_HOLIDAYS = {
+    "2026-01-15": "Municipal Corporation Elections (Maharashtra)",
+    "2026-01-26": "Republic Day",
+    "2026-03-03": "Holi",
+    "2026-03-26": "Shri Ram Navami",
+    "2026-03-31": "Shri Mahavir Jayanti",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-28": "Bakri Id",
+    "2026-06-26": "Muharram",
+    "2026-09-14": "Ganesh Chaturthi",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra",
+    "2026-11-10": "Diwali-Balipratipada",
+    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
+    "2026-12-25": "Christmas",
+}
+
+
+def to_ist(utc):
+    """An aware or naive (taken as UTC) datetime -> aware IST datetime."""
+    if utc.tzinfo is None:
+        utc = utc.replace(tzinfo=_UTC)
+    return utc.astimezone(IST)
+
+
+def ist_to_utc(local_naive):
+    """A naive IST wall-clock datetime -> aware UTC datetime (an aware one is just converted)."""
+    if local_naive.tzinfo is None:
+        local_naive = local_naive.replace(tzinfo=IST)
+    return local_naive.astimezone(_UTC)
+
+
+def parse_now(text):
+    """--now -> aware UTC datetime. 'YYYY-MM-DD HH:MM' or 'HH:MM' (today) is IST; 'Z' or an offset is honoured."""
+    if not text or not str(text).strip():
+        return _dt.datetime.now(_UTC).replace(microsecond=0)
+    t = str(text).strip()
+    if t.upper().endswith(" IST"):
+        t = t[:-4].strip()
+    if _re.match(r"^\d{1,2}:\d{2}$", t):
+        t = "%s %s" % (to_ist(_dt.datetime.now(_UTC)).date().isoformat(), t.zfill(5))
+    if t.endswith(("Z", "z")):
+        t = t[:-1] + "+00:00"
+    try:
+        dt = _dt.datetime.fromisoformat(t)
+    except ValueError:
+        raise ValueError('--now wants an IST time like "2026-10-27 10:15" (or ...Z for UTC), not %r' % text)
+    return ist_to_utc(dt)
+
+
+def _special(d, cfg):
+    sp = ((cfg or {}).get("special_sessions") or {}).get(d.isoformat())
+    if not sp:
+        return None
+    try:
+        a, b = [_dt.time(int(x[:2]), int(x[3:5])) for x in sp[:2]]
+    except (ValueError, TypeError, IndexError):
+        return None
+    return a, b
+
+
+def trading_day(d, cfg=None):
+    """(is_open, reason). reason: '' | 'weekend' | holiday name | 'special session' | 'calendar not loaded'."""
+    if _special(d, cfg):
+        return True, "special session"
+    if d.weekday() >= 5:
+        return False, "weekend"
+    if d.year not in CALENDAR_YEARS:
+        return True, "calendar not loaded"
+    name = NSE_HOLIDAYS.get(d.isoformat())
+    return (False, name) if name else (True, "")
+
+
+def session(d, cfg=None):
+    """(open_time, close_time) in IST, or None if the exchange is shut all day."""
+    sp = _special(d, cfg)
+    if sp:
+        return sp
+    return (OPEN, CLOSE) if trading_day(d, cfg)[0] else None
+
+
+def _stamp(d, t):
+    return "%sT%02d:%02d+05:30" % (d.isoformat(), t.hour, t.minute)
+
+
+def market_status(now_utc, cfg=None):
+    """{'state': 'pre-open'|'open'|'closed', 'reason': str, 'next_open': 'YYYY-MM-DDTHH:MM+05:30'}."""
+    now = to_ist(now_utc)
+    d, t = now.date(), now.time().replace(second=0, microsecond=0)
+    ok, why = trading_day(d, cfg)
+    s = session(d, cfg)
+    state, reason = "closed", why
+    if s:
+        reason = ""
+        if s[0] <= t < s[1]:
+            state = "open"
+        elif not _special(d, cfg) and PREOPEN <= t < OPEN:
+            state, reason = "pre-open", "pre-open session until %02d:%02d" % (OPEN.hour, OPEN.minute)
+        else:
+            reason = "before the open" if t < s[0] else "after the close"
+    nxt = ""
+    for i in range(0, 400):
+        day = d + _dt.timedelta(days=i)
+        ds = session(day, cfg)
+        if ds and (i > 0 or t < ds[0]) and not (i == 0 and state == "open"):
+            nxt = _stamp(day, ds[0])
+            break
+    return {"state": state, "reason": reason, "next_open": nxt}
+
+
+def _dec(x):
+    if isinstance(x, _Dec):
+        return x
+    if isinstance(x, float):
+        return _Dec(repr(x))
+    return _Dec(str(x).strip().replace(",", ""))
+
+
+def tick_for(price):
+    """NSE CM tick size for a reference price. Upper bound of each slab is inclusive, except 250."""
+    p = _dec(price)
+    if p < 250:
+        return _Dec("0.01")
+    for top, tick in ((1000, "0.05"), (5000, "0.10"), (10000, "0.50"), (20000, "1.00")):
+        if p <= top:
+            return _Dec(tick)
+    return _Dec("5.00")
+
+
+def _to_tick(x, ref, mode):
+    tick = tick_for(ref)
+    n = (_dec(x) / tick).to_integral_value(rounding=mode)
+    return (n * tick).quantize(_Dec("0.01"))
+
+
+def floor_tick(x, ref):
+    return _to_tick(x, ref, _FLOOR)
+
+
+def round_tick(x, ref):
+    return _to_tick(x, ref, _HALF_UP)
+
+
+def ceil_tick(x, ref):
+    return _to_tick(x, ref, _CEIL)
+
+
+def inr(x, decimals=2):
+    """Rupees with Indian digit grouping: 12345678.9 -> '₹1,23,45,678.90'."""
+    v = _dec(x).quantize(_Dec(1).scaleb(-decimals), rounding=_HALF_UP)
+    sign = "-" if v < 0 else ""
+    whole, _, frac = format(abs(v), "f").partition(".")
+    if len(whole) > 3:
+        head, tail = whole[:-3], whole[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        whole = ",".join(parts + [tail])
+    return "%s₹%s%s" % (sign, whole, "." + frac if frac else "")
+
+
+def crore(x):
+    """1.9407e11 -> '₹19,407.0 cr'."""
+    return inr(_dec(x) / _Dec(10000000), 1) + " cr"
+
+
+def yahoo_symbol(sym):
+    """NSE symbol -> Yahoo symbol; '&' and '-' stay: M&M -> M&M.NS."""
+    s = str(sym).strip().upper()
+    return s if s.endswith((".NS", ".BO")) else s + ".NS"
+
+
+def yahoo_quote(sym):
+    """yahoo_symbol, URL-encoded for a path: M&M -> M%26M.NS."""
+    return _urlparse.quote(yahoo_symbol(sym), safe="")
+# --- nse common: end ---
+
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK%s.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK%s.json"

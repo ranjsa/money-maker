@@ -83,7 +83,6 @@ class Repo(unittest.TestCase):
         for s in SKILLS:
             self.assertIn("/" + s, readme, s)
 
-    @unittest.skip("Task 1")
     def test_common_blocks_identical(self):
         self.assertEqual(subprocess.call([sys.executable, "tests/sync_common.py", "--check"], cwd=ROOT), 0)
 
