@@ -1,3 +1,5 @@
+import copy
+import datetime
 import io
 import json
 import os
@@ -12,23 +14,38 @@ ticket = load("nse-broker", "ticket")
 check = load("nse-risk", "check")
 
 CFG_PATH = os.path.join(ROOT, "nse-budget", "config.example.json")
-ORDERS_PATH = os.path.join(FIX, "nse-risk", "orders-tsla.json")
-PLAN_PATH = os.path.join(FIX, "nse-budget", "plan-demo.json")
-NOW = "2026-10-19 10:15"
-TODAY = "2026-10-19"
-AAPL = {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market", "time_in_force": "day"}
-BATCH = ["AAPL", "AXP", "GOOGL", "KO", "BAC"]
-TSLA_CALL = {"symbol": "TSLA", "side": "buy", "qty": "8", "type": "market", "time_in_force": "day",
-             "order_class": "bracket", "take_profit_limit_price": "370.04", "stop_loss_stop_price": "358.32"}
-TSLA_PLAIN = ("BUY 8 TSLA, market, good for today / stop-loss 358.32 / take-profit 370.04 / max loss about "
-              "$46.88 if the stop fills at 358.32 (it can fill worse in a fast market)")
+ORDERS_PATH = os.path.join(FIX, "nse-risk", "orders-demo.json")
+GROUP = "DEMO-2026-10-27-1"
+ENTRY_CALL = {"variety": "regular", "exchange": "NSE", "tradingsymbol": "DEMO", "transaction_type": "BUY",
+              "quantity": 73, "product": "MIS", "order_type": "MARKET", "validity": "DAY"}
+STOP_CALL = {"variety": "regular", "exchange": "NSE", "tradingsymbol": "DEMO", "transaction_type": "SELL",
+             "quantity": 73, "product": "MIS", "order_type": "SL-M", "validity": "DAY", "trigger_price": 1005.2}
+TARGET_CALL = {"variety": "regular", "exchange": "NSE", "tradingsymbol": "DEMO", "transaction_type": "SELL",
+               "quantity": 73, "product": "MIS", "order_type": "LIMIT", "price": 1034.6, "validity": "DAY"}
 
 
-def tsla(**over):
-    with open(ORDERS_PATH) as fh:
-        o = json.load(fh)["orders"][0]
-    o.update(over)
-    return o
+def demo(**over):
+    with open(ORDERS_PATH, encoding="utf-8") as fh:
+        g = json.load(fh)["orders"][0]
+    g.update(over)
+    return g
+
+
+def other(symbol="RELIANCE", qty=20, group="RELIANCE-2026-10-27-1"):
+    g = demo(group=group)
+    for lg in g["legs"]:
+        lg["tradingsymbol"], lg["quantity"] = symbol, qty
+    g["plan"] = dict(g["plan"], entry=1450.0, stop=1440.0, target=1470.0, max_loss=250.0)
+    g["legs"][1]["trigger_price"], g["legs"][2]["price"] = 1440.0, 1470.0
+    return g
+
+
+def real_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+
+
+def ist_today():
+    return ticket.to_ist(real_now()).date().isoformat()
 
 
 def run(argv):
@@ -38,75 +55,129 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
-@unittest.skip("ported in Task 9")
-class ExplicitYes(unittest.TestCase):
-    def yes(self, reply, order=AAPL, batch=BATCH):
-        return ticket.parse_yes(reply, order, batch)[0]
+def write_risk(path, groups, verdict="PASS", date=None, now_ist=None, checked_at=None, reasons=None):
+    """nse/state/risk.json exactly as nse-risk writes it (check.write_verdicts), for these groups."""
+    now = real_now()
+    res = {"date": date or ist_today(),
+           "now_ist": now_ist or ticket.to_ist(now).strftime("%Y-%m-%d %H:%M"),
+           "paper": True, "pass": 0, "block": 0, "warnings": [], "cash_after": 0, "today": {},
+           "results": [{"index": i, "group": g["group"], "symbol": g["legs"][0]["tradingsymbol"], "side": "BUY",
+                        "kind": "entry", "qty": g["legs"][0]["quantity"], "legs": len(g["legs"]),
+                        "max_loss": g["plan"]["max_loss"], "fingerprint": check.fingerprint(g),
+                        "verdict": verdict, "reasons": reasons or [], "warnings": [], "info": []}
+                       for i, g in enumerate(groups, 1)]}
+    check.write_verdicts(path, res, "nse/orders.json")
+    if checked_at is not None:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        for v in doc["verdicts"].values():
+            v["checked_at"] = checked_at
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
 
-    def test_plain_yes_counts(self):
-        for r in ("yes", "Yes.", "YES", "y", "yes place it", "Yes, buy it", "yes AAPL", "yes $1,250 of AAPL",
-                  "yes 1250"):
+
+class ExplicitYes(unittest.TestCase):
+    def yes(self, reply, group=None, batch=None):
+        g = group or demo()
+        return ticket.parse_yes(reply, g, batch if batch is not None else [g])[0]
+
+    def test_a_yes_that_names_the_symbol_and_the_qty_counts(self):
+        for r in ("yes 73 DEMO", "Yes, buy 73 DEMO.", "YES BUY 73 demo", "y 73 DEMO", "yes buy 73 DEMO",
+                  "yes 73 DEMO max loss 788.66", "yes 73 DEMO target 1034.60", "yes 73 shares of DEMO"):
             self.assertTrue(self.yes(r), r)
 
     def test_anything_else_does_not(self):
-        for r in ("", "sure", "ok", "okay", "go", "do it", "yeah", "yep", "absolutely", "send it",
-                  "yes to all", "yes, all of them", "yes to the rest", "yes both",
-                  "yes AXP", "yes 1000", "yes but make it 1000", "yes?", "no", "not yes",
-                  "yes, wait", "yes if it is under 340"):
+        for r in ("", "yes", "Yes.", "y", "yes DEMO", "yes 73", "yes buy it", "sure 73 DEMO", "ok 73 DEMO",
+                  "go 73 DEMO", "yeah 73 DEMO", "yes to all", "yes, all of them 73 DEMO", "yes both 73 DEMO",
+                  "yes 74 DEMO", "yes 73 DEMO?", "yes 73 DEMO but later", "no", "not yes 73 DEMO",
+                  "yes 73 DEMO if it dips", "yes 73 DEMO, wait", "yes 73 DEMO at 1000"):
             self.assertFalse(self.yes(r), r)
 
-    def test_amount_must_match_this_order(self):
-        sell = {"symbol": "KO", "side": "sell", "qty": "3", "type": "market", "time_in_force": "day"}
-        self.assertTrue(self.yes("yes sell 3 KO", sell))
-        self.assertFalse(self.yes("yes sell 4", sell))
+    def test_a_two_group_batch(self):
+        g1, g2 = demo(), other()
+        batch = [g1, g2]
+        self.assertFalse(self.yes("yes", g1, batch))
+        self.assertTrue(self.yes("yes 73 DEMO", g1, batch))
+        self.assertTrue(self.yes("yes 20 RELIANCE", g2, batch))
+        ok, why = ticket.parse_yes("yes 73 DEMO RELIANCE", g1, batch)
+        self.assertFalse(ok)
+        self.assertIn("RELIANCE", why)
+        self.assertFalse(self.yes("yes 20 RELIANCE", g1, batch))
 
-    def test_a_bracket_yes(self):
-        o = tsla()
-        for r in ("yes", "yes 8 TSLA", "yes 358.32", "yes max loss 46.88", "yes target 370.04"):
-            self.assertTrue(self.yes(r, o, ["TSLA"]), r)
-        for r in ("yes 9", "yes 10 TSLA", "yes but stop at 357", "yes, stop 358.32", "yes AAPL", "sure"):
-            self.assertFalse(self.yes(r, o, ["TSLA", "AAPL"]), r)
+    def test_two_identical_looking_groups_are_ambiguous(self):
+        g1 = demo()
+        g2 = demo(group="DEMO-2026-10-27-2")
+        g2["legs"][2]["price"] = 1040.0
+        g2["plan"] = dict(g2["plan"], target=1040.0)
+        ok, why = ticket.parse_yes("yes 73 DEMO", g1, [g1, g2])
+        self.assertFalse(ok)
+        self.assertIn("ambiguous", why)
+        self.assertTrue(self.yes("yes 73 DEMO target 1034.60", g1, [g1, g2]))
+
+    def test_symbols_with_ampersand_and_hyphen(self):
+        mm = other("M&M", 10, "MM-1")
+        self.assertTrue(self.yes("yes 10 M&M", mm, [mm]))
+        ba = other("BAJAJ-AUTO", 5, "BA-1")
+        self.assertTrue(self.yes("yes 5 BAJAJ-AUTO", ba, [ba]))
+        self.assertFalse(self.yes("yes 5 BAJAJ", ba, [ba]))
 
 
-@unittest.skip("ported in Task 9")
 class TicketShape(unittest.TestCase):
-    def test_tool_input_is_the_alpaca_call(self):
-        o = dict(AAPL, why="from a list")
-        self.assertEqual(ticket.tool_input(o), AAPL)
-        self.assertEqual(ticket.tool_input({"symbol": "KO", "side": "buy", "qty": 3, "type": "limit",
-                                            "limit_price": 89.5, "time_in_force": "day"}),
-                         {"symbol": "KO", "side": "buy", "qty": "3", "type": "limit", "limit_price": "89.5",
-                          "time_in_force": "day"})
+    def test_tool_input_is_the_kite_place_order_call(self):
+        g = demo()
+        self.assertEqual(ticket.tool_input(g["legs"][0]), ENTRY_CALL)
+        self.assertEqual(ticket.tool_input(g["legs"][1]), STOP_CALL)
+        self.assertEqual(ticket.tool_input(g["legs"][2]), TARGET_CALL)
+        for lg in g["legs"]:
+            self.assertNotIn("role", ticket.tool_input(lg))
+            self.assertTrue(set(ticket.tool_input(lg)) <= set(ticket.KITE_PLACE_ORDER))
+        lim = dict(g["legs"][0], order_type="LIMIT", price="1015.50", quantity="73")
+        call = ticket.tool_input(lim)
+        self.assertEqual((call["price"], call["quantity"]), (1015.5, 73))
 
-    def test_the_bracket_call_leaves_out_why_and_plan(self):
-        self.assertEqual(ticket.tool_input(tsla()), TSLA_CALL)
-        self.assertEqual(ticket.fingerprint(tsla()), ticket.fingerprint(TSLA_CALL))
+    def test_fingerprint_is_nse_risk_fingerprint(self):
+        g = demo()
+        self.assertEqual(ticket.fingerprint(g), check.fingerprint(g))
+        self.assertEqual(ticket.fingerprint(demo(why="edited why")), check.fingerprint(g))
+        g2 = demo()
+        g2["legs"][0]["quantity"] = 74
+        self.assertNotEqual(ticket.fingerprint(g2), check.fingerprint(g))
 
-    def test_plain_english(self):
-        self.assertEqual(ticket.plain(AAPL), "BUY $1,250 of AAPL, market order, good for today")
-        self.assertEqual(ticket.plain({"symbol": "KO", "side": "sell", "qty": "1", "type": "limit",
-                                       "limit_price": "95", "time_in_force": "gtc"}),
-                         "SELL 1 share of KO, limit order at $95, good until canceled")
-        self.assertEqual(ticket.plain(tsla()), TSLA_PLAIN)
-        lim = tsla(type="limit", limit_price="364.00")
-        self.assertEqual(ticket.plain(lim).split(" / ")[0], "BUY 8 TSLA, limit 364.00, good for today")
-        self.assertEqual(ticket.max_loss(lim), (45.44, 358.32))
-        no_plan = dict(TSLA_CALL)
-        self.assertEqual(ticket.max_loss(no_plan), (None, 358.32))
+    def test_plain_words(self):
+        g = demo()
+        self.assertEqual(ticket.plain_leg(g["legs"][0]),
+                         "BUY 73 DEMO on NSE at market, intraday (MIS), good for today")
+        self.assertEqual(ticket.plain_leg(g["legs"][1]),
+                         "SELL 73 DEMO on NSE, stop-loss at market (SL-M) triggered at ₹1,005.20, intraday (MIS), "
+                         "good for today")
+        self.assertEqual(ticket.plain_leg(g["legs"][2]),
+                         "SELL 73 DEMO on NSE, limit at ₹1,034.60, intraday (MIS), good for today")
+        self.assertEqual(ticket.max_loss(g), (788.66, 1005.2))
 
 
-@unittest.skip("ported in Task 9")
 class DesktopConfig(unittest.TestCase):
-    def test_example_is_paper_with_placeholder_keys(self):
-        with open(os.path.join(ROOT, "nse-broker", "claude_desktop_config.example.json")) as fh:
-            server = json.load(fh)["mcpServers"]["alpaca"]
-        self.assertEqual((server["command"], server["args"]), ("uvx", ["alpaca-mcp-server"]))
-        self.assertEqual(server["env"]["ALPACA_PAPER_TRADE"], "true")
-        for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
-            self.assertIn("NEVER_IN_CHAT", server["env"][k])
+    def test_example_has_hosted_and_self_hosted_kite_with_placeholders(self):
+        with open(os.path.join(ROOT, "nse-broker", "claude_desktop_config.example.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        servers = doc["mcpServers"]
+        self.assertEqual(servers["kite"]["args"], ["mcp-remote", "https://mcp.kite.trade/mcp"])
+        local = servers["kite-self-hosted"]
+        self.assertEqual(local["env"]["APP_MODE"], "stdio")
+        for k in ("KITE_API_KEY", "KITE_API_SECRET"):
+            self.assertIn("NEVER_IN_CHAT", local["env"][k])
+        notes = " ".join(doc["_notes"])
+        for word in ("place_order", "modify_order", "cancel_order", "Needs approval", "zerodha/kite-mcp-server"):
+            self.assertIn(word, notes)
+
+    def test_skill_records_the_verified_kite_tools(self):
+        with open(os.path.join(ROOT, "nse-broker", "SKILL.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        for word in ("place_order", "modify_order", "cancel_order", "get_orders", "https://mcp.kite.trade/mcp",
+                     "trigger_price", "tradingsymbol", "transaction_type", "Needs approval", "paper.py",
+                     "name: nse-broker"):
+            self.assertIn(word, text)
 
 
-@unittest.skip("ported in Task 9")
 class Flow(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -117,194 +188,234 @@ class Flow(unittest.TestCase):
         self.risk = os.path.join(self.d, "state", "risk.json")
         self.state = os.path.join(self.d, "state", "broker.json")
         self.pf = os.path.join(self.d, "portfolio.json")
-        self.none = os.path.join(self.d, "none")
 
     def tearDown(self):
         shutil.rmtree(self.d)
 
-    def args(self, *extra, **kw):
+    def args(self, *extra):
         return list(extra) + ["--orders", self.orders, "--config", self.cfg, "--risk", self.risk,
-                              "--state", self.state, "--now", kw.get("now", NOW)]
+                              "--state", self.state]
 
-    def run_risk(self, now=NOW):
-        with redirect_stdout(io.StringIO()):
-            return check.main(["--orders", self.orders, "--config", self.cfg, "--portfolio", self.pf,
-                               "--prices", self.none, "--state", self.state, "--now", now, "--out", self.risk])
+    def fill(self, *extra):
+        return run(["fill", "--group", GROUP] + list(extra) + ["--orders", self.orders, "--config", self.cfg,
+                                                               "--state", self.state, "--portfolio", self.pf])
+
+    def set_broker(self, broker):
+        with open(self.cfg, encoding="utf-8") as fh:
+            c = json.load(fh)
+        c["broker"] = broker
+        with open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump(c, fh)
 
     def state_doc(self):
-        with open(self.state) as fh:
+        with open(self.state, encoding="utf-8") as fh:
             return json.load(fh)
 
     def test_nothing_is_ready_before_the_risk_check(self):
         code, text, _ = run(self.args("show"))
         self.assertEqual(code, 1)
         self.assertIn("NOT READY", text)
-        self.assertNotIn("Reply \"yes\"", text)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes"))
+        self.assertNotIn("Reply \"yes", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
         self.assertEqual(code, 1)
         self.assertIn("not ready", err)
 
-    def test_the_full_two_yes_flow(self):
-        self.assertEqual(self.run_risk(), 0)
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertEqual(code, 0)
-        self.assertIn("ORDER 1 of 1, PAPER account, Alpaca", text)
-        for part in TSLA_PLAIN.split(" / "):
-            self.assertIn("  " + part + "\n", text)
-        self.assertIn("READY: trader-risk PASS", text)
-        self.assertIn('"order_class": "bracket"', text)
-        self.assertIn('"stop_loss_stop_price": "358.32"', text)
+    def test_show_prints_three_legs_and_ready(self):
+        write_risk(self.risk, [demo()])
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 0, text)
+        self.assertIn("READY: nse-risk PASS", text)
+        self.assertIn("PAPER", text)
+        for n, role in ((1, "entry"), (2, "stop"), (3, "target")):
+            self.assertIn("leg %d, %s:" % (n, role), text)
+        self.assertEqual(text.count("place_order with exactly"), 3)
+        self.assertIn('"trigger_price": 1005.2', text)
+        self.assertIn('"price": 1034.6', text)
+        self.assertNotIn('"role"', text)
         self.assertNotIn('"plan"', text)
-        self.assertNotIn('"why"', text)
-        self.assertIn("Allow once", text)
+        self.assertIn("only after the entry fills", text)
+        self.assertIn("no bracket orders", text)
+        self.assertIn("Not financial advice", text)
+        self.assertIn('Reply "yes 73 DEMO"', text)
+        code, text, _ = run(self.args("show", "--index", "1", "--json"))
+        t = json.loads(text)
+        self.assertEqual([x["tool_input"] for x in t["legs"]], [ENTRY_CALL, STOP_CALL, TARGET_CALL])
+        self.assertTrue(t["ready"])
 
-        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "sure"))
+    def test_a_check_from_yesterday_needs_a_recheck(self):
+        y = (datetime.date.fromisoformat(ist_today()) - datetime.timedelta(days=1)).isoformat()
+        write_risk(self.risk, [demo()], date=y)
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1)
+        self.assertIn("RECHECK", text)
+        self.assertIn("run nse-risk again", text)
+
+    def test_a_check_older_than_30_minutes_needs_a_recheck(self):
+        old = (real_now() - datetime.timedelta(minutes=45)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        write_risk(self.risk, [demo()], checked_at=old,
+                   now_ist=ticket.to_ist(real_now() - datetime.timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M"))
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1)
+        self.assertIn("RECHECK", text)
+        self.assertIn("run nse-risk again", text)
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 1)
+
+    def test_a_check_with_a_pinned_clock_needs_a_recheck(self):
+        pinned = ticket.to_ist(real_now() - datetime.timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
+        write_risk(self.risk, [demo()], now_ist=pinned)
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1)
+        self.assertIn("RECHECK", text)
+        self.assertIn("pinned", text)
+
+    def test_a_check_29_minutes_old_still_counts(self):
+        t = real_now() - datetime.timedelta(minutes=29)
+        write_risk(self.risk, [demo()], checked_at=t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   now_ist=ticket.to_ist(t).strftime("%Y-%m-%d %H:%M"))
+        self.assertEqual(run(self.args("show"))[0], 0)
+
+    def test_an_edited_group_is_not_ready(self):
+        write_risk(self.risk, [demo()])
+        with open(self.orders, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        for lg in doc["orders"][0]["legs"]:
+            lg["quantity"] = 80
+        with open(self.orders, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1)
+        self.assertIn("not in today's risk check", text)
+
+    def test_blocked_groups_are_never_ready(self):
+        write_risk(self.risk, [demo()], verdict="BLOCK", reasons=["window: no new entries after 14:45 IST"])
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1)
+        self.assertIn("BLOCKED by nse-risk: window: no new entries after 14:45 IST", text)
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 1)
+
+    def test_a_plain_yes_on_a_two_group_batch_is_refused(self):
+        with open(self.orders, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        doc["orders"].append(other())
+        with open(self.orders, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        write_risk(self.risk, doc["orders"])
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes"))
         self.assertEqual(code, 1)
         self.assertIn("Not recorded", text)
         self.assertFalse(os.path.exists(self.state))
+        code, text, _ = run(self.args("approve", "--index", "2", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.state))
+        code, text, _ = run(self.args("approve", "--index", "2", "--reply", "yes 20 RELIANCE"))
+        self.assertEqual(code, 0, text)
 
-        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes"))
-        self.assertEqual(code, 0)
-        self.assertIn("place_stock_order", text)
-        self.assertEqual(json.loads(text[text.index("{"):text.rindex("}") + 1]), TSLA_CALL)
-        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes"))
+    def test_paper_approve_hands_the_group_to_the_paper_engine(self):
+        write_risk(self.risk, [demo()])
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "sure"))
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.state))
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes buy 73 DEMO"))
+        self.assertEqual(code, 0, text)
+        self.assertIn("paper.py run --group %s" % GROUP, text)
+        self.assertNotIn("place_order with exactly", text)
+        rec = self.state_doc()["orders"][0]
+        self.assertEqual((rec["status"], rec["reply"], rec["group"], rec["broker"], rec["kind"]),
+                         ("approved", "yes buy 73 DEMO", GROUP, "paper", "entry"))
+        self.assertEqual((rec["max_loss"], rec["qty"], rec["symbol"]), (788.66, 73, "DEMO"))
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes buy 73 DEMO"))
         self.assertEqual(code, 1)
         self.assertIn("APPROVED", err)
 
-        code, text, _ = run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc123",
-                                      "--filled-qty", "8", "--filled-price", "364.20", "--portfolio", self.pf,
-                                      now="2026-10-19 10:16"))
-        self.assertEqual(code, 0)
-        st = self.state_doc()
-        self.assertEqual([r["status"] for r in st["orders"]], ["approved", "placed", "filled"])
-        appr, plc = st["orders"][0], st["orders"][1]
-        self.assertEqual((appr["reply"], appr["kind"], appr["max_loss"], appr["date"]), ("yes", "entry", 46.88, TODAY))
-        self.assertEqual(appr["at"], "2026-10-19T10:15:00-04:00")
-        self.assertEqual((plc["broker_order_id"], plc["max_loss"], plc["kind"]), ("abc123", 46.88, "entry"))
-        with open(self.pf) as fh:
-            pf = json.load(fh)
-        self.assertEqual(pf["cash"], 2086.4)
-        self.assertEqual(pf["positions"][0]["shares"], 8)
+    def test_an_unknown_broker_is_an_error(self):
+        self.set_broker("alpaca")
+        write_risk(self.risk, [demo()])
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 1)
+        self.assertIn("broker", err)
+        self.assertFalse(os.path.exists(self.state))
+        self.assertEqual(run(self.args("show"))[0], 1)
 
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("DONE: placed", text)
-        code, text, _ = run(["log", "--state", self.state, "--now", NOW])
-        self.assertIn("1 placed today", text)
-        self.assertIn("max loss $46.88", text)
+    def test_the_kite_flow_entry_then_stop_and_target_then_cancel_the_sibling(self):
+        self.set_broker("kite")
+        write_risk(self.risk, [demo()])
+        code, text, _ = run(self.args("show"))
+        self.assertIn("REAL MONEY", text)
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 0, text)
+        first = text[text.index("{"):text.index("}") + 1]
+        self.assertEqual(json.loads(first), ENTRY_CALL)
+        self.assertIn("Needs approval", text)
+        self.assertIn("after the entry fills", text)
 
-        # trader-risk now counts it: a second TSLA buy today is a duplicate, and $46.88 is used
-        res = check.check([tsla()], {"budget": 5000}, state=st, now=check.parse_now("2026-10-19 10:30"))
+        code, _, err = run(self.args("result", "--index", "1", "--leg", "stop", "--status", "placed",
+                                     "--order-id", "222"))
+        self.assertEqual(code, 1)
+        self.assertIn("entry", err)
+        code, text, _ = run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed",
+                                      "--order-id", "111"))
+        self.assertEqual(code, 0, text)
+        code, text, _ = self.fill("--leg", "entry", "--price", "1015.00")
+        self.assertEqual(code, 0, text)
+        self.assertIn("place the stop-loss and the target now", text)
+        self.assertIn('"trigger_price": 1005.2', text)
+        run(self.args("result", "--index", "1", "--leg", "stop", "--status", "placed", "--order-id", "222"))
+        run(self.args("result", "--index", "1", "--leg", "target", "--status", "placed", "--order-id", "333"))
+        code, text, _ = self.fill("--leg", "target", "--price", "1034.60")
+        self.assertEqual(code, 0, text)
+        self.assertIn("cancel_order", text)
+        call = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        self.assertEqual(call, {"variety": "regular", "order_id": "222"})
+        self.assertIn("stop", text[:text.index("{")])
+
+        st = self.state_doc()["orders"]
+        self.assertEqual([r["status"] for r in st],
+                         ["approved", "placed", "filled", "placed", "placed", "filled"])
+        # nse-risk counts it: three Kite orders, one entry, its max loss, and DEMO BUY is a duplicate today
+        today = ist_today()
+        res = check.check([demo()], {"budget": 100000}, state={"orders": st}, today=today, now=real_now())
+        self.assertEqual(res["today"], {"orders_placed": 3, "entries_placed": 1, "loss_at_risk": 788.66})
         self.assertIn("already placed today", " ".join(res["results"][0]["reasons"]))
-        self.assertEqual((res["today"]["entries_placed"], res["today"]["loss_at_risk"]), (1, 46.88))
+        with open(self.pf, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["positions"], [])
 
-    def test_flatten_by_the_close(self):
-        self.run_risk()
-        run(self.args("approve", "--index", "1", "--reply", "yes"))
-        run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc",
-                      "--filled-qty", "8", "--filled-price", "364.20", "--portfolio", self.pf))
-        late = "2026-10-19 15:55"
-        code, text, _ = run(["flatten", "--symbol", "TSLA", "--orders", self.orders, "--portfolio", self.pf,
-                             "--plan", PLAN_PATH, "--config", self.cfg, "--now", late])
-        self.assertEqual(code, 0)
-        self.assertIn("SELL 8 shares of TSLA, market order, good for today (flat by 15:55 New York)", text)
-        self.assertIn("replaced 1 earlier proposal", text)
-        self.assertIn("cancel_order_by_id", text)
-        with open(self.orders) as fh:
-            doc = json.load(fh)
-        self.assertEqual(ticket.tool_input(doc["orders"][0]),
-                         {"symbol": "TSLA", "side": "sell", "qty": "8", "type": "market", "time_in_force": "day"})
-        self.assertEqual(self.run_risk(now=late), 0)       # after the 15:30 entry cutoff: an exit still passes
-        with open(self.risk) as fh:
-            self.assertEqual(json.load(fh)["results"][0]["kind"], "exit")
-        code, text, _ = run(self.args("show", now=late))
-        self.assertEqual(code, 0)
-        self.assertIn("READY", text)
-        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes sell 8 TSLA", now=late))[0], 0)
-        code, _, _ = run(self.args("result", "--index", "1", "--status", "placed", "--filled-qty", "8",
-                                   "--filled-price", "366.10", "--portfolio", self.pf, now="2026-10-19 15:56"))
-        self.assertEqual(code, 0)
-        with open(self.pf) as fh:
-            pf = json.load(fh)
-        self.assertEqual((pf["cash"], pf["positions"]), (5015.2, []))
-        self.assertEqual(check.day_trades(self.state_doc(), TODAY), (1, ["2026-10-19 TSLA"]))
-        code, _, err = run(["flatten", "--symbol", "TSLA", "--orders", self.orders, "--portfolio", self.pf,
-                            "--now", late])
-        self.assertEqual(code, 1)
-        self.assertIn("nothing to flatten", err)
-
-    def test_flatten_with_the_broker_qty(self):
-        code, text, _ = run(["flatten", "--symbol", "tsla", "--qty", "8", "--orders", self.orders,
-                             "--portfolio", self.none, "--plan", self.none, "--config", self.cfg, "--now", NOW])
-        self.assertEqual(code, 0)
-        self.assertNotIn("Check it against get_open_position", text)
-        self.assertEqual(run(["flatten", "--symbol", "TSLA", "--qty", "0", "--orders", self.orders])[0], 1)
-
-    def test_an_edited_order_is_not_ready(self):
-        self.run_risk()
-        with open(self.orders) as fh:
-            doc = json.load(fh)
-        doc["orders"][0]["qty"] = "9"
-        with open(self.orders, "w") as fh:
-            json.dump(doc, fh)
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertEqual(code, 1)
-        self.assertIn("was not in the last risk check", text)
-
-    def test_yesterdays_check_does_not_count(self):
-        self.run_risk(now="2026-10-16 10:15")
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("not today", text)
-
-    def test_blocked_orders_are_never_ready(self):
-        self.assertEqual(self.run_risk(now="2026-10-19 09:40"), 1)
-        code, text, _ = run(self.args("show", "--index", "1", now="2026-10-19 09:40"))
-        self.assertIn("BLOCKED by trader-risk: window: no new entries before 09:45", text)
-        code, _, _ = run(self.args("approve", "--index", "1", "--reply", "yes", now="2026-10-19 09:40"))
-        self.assertEqual(code, 1)
+    def test_fill_without_an_order_id_prints_a_placeholder(self):
+        write_risk(self.risk, [demo()])
+        self.fill("--leg", "entry", "--price", "1015.00")
+        code, text, _ = self.fill("--leg", "stop", "--price", "1005.20")
+        self.assertEqual(code, 0, text)
+        self.assertIn('"order_id": "<order_id of the target leg>"', text)
+        self.assertIn("no order id", text)
+        self.assertIn("cancel_order", text)
 
     def test_result_needs_an_approval_and_decline_is_logged(self):
-        self.run_risk()
-        code, _, err = run(self.args("result", "--index", "1", "--status", "placed"))
+        write_risk(self.risk, [demo()])
+        code, _, err = run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed"))
         self.assertEqual(code, 1)
         self.assertIn("no yes recorded", err)
         code, text, _ = run(self.args("decline", "--index", "1", "--reply", "no thanks"))
         self.assertEqual(code, 0)
-        code, text, _ = run(self.args("show", "--index", "1"))
+        code, text, _ = run(self.args("show"))
         self.assertIn("DONE: declined", text)
+        code, text, _ = run(["log", "--state", self.state])
+        self.assertIn("declined", text)
 
-    def test_ibkr_tickets_send_the_final_yes_to_ibkr(self):
-        with open(self.cfg) as fh:
-            c = json.load(fh)
-        c["broker"] = "ibkr"
-        with open(self.cfg, "w") as fh:
-            json.dump(c, fh)
-        self.run_risk()
-        code, text, _ = run(self.args("show", "--index", "1"))
-        self.assertIn("Interactive Brokers", text)
-        self.assertIn("after you approve it there", text)
-        self.assertNotIn("place_stock_order", text)
-
-    def test_fill_sell_relieves_the_oldest_lot(self):
-        pf = {"cash": 0, "positions": [{"ticker": "KO", "shares": 3, "lots": [
-            {"id": "KO-1", "date": "2025-01-02", "shares": 2, "cost": 120.0},
-            {"id": "KO-2", "date": "2026-01-02", "shares": 1, "cost": 70.0}]}]}
-        with open(self.pf, "w") as fh:
-            json.dump(pf, fh)
-        code, text, _ = run(["fill", "--symbol", "KO", "--side", "sell", "--qty", "2.5", "--price", "90",
-                             "--date", TODAY, "--portfolio", self.pf, "--config", self.cfg, "--state", self.state])
-        self.assertEqual(code, 0)
-        with open(self.pf) as fh:
-            pf = json.load(fh)
-        self.assertEqual(pf["cash"], 225.0)
-        lots = pf["positions"][0]["lots"]
-        self.assertEqual([l["id"] for l in lots], ["KO-2"])
-        self.assertEqual(lots[0]["shares"], 0.5)
-        self.assertEqual(lots[0]["cost"], 35.0)
-        self.assertEqual(self.state_doc()["orders"][-1]["status"], "filled")
-        code, _, err = run(["fill", "--symbol", "KO", "--side", "sell", "--qty", "5", "--price", "90",
-                            "--portfolio", self.pf, "--config", self.cfg, "--state", self.state])
+    def test_flatten_writes_an_exit_group(self):
+        code, text, _ = run(["flatten", "--symbol", "demo", "--qty", "73", "--orders", self.orders,
+                             "--portfolio", self.pf, "--config", self.cfg])
+        self.assertEqual(code, 0, text)
+        self.assertIn("cancel_order", text)
+        self.assertIn("15:10", text)
+        with open(self.orders, encoding="utf-8") as fh:
+            g = json.load(fh)["orders"][0]
+        self.assertEqual(ticket.tool_input(g["legs"][0]),
+                         {"variety": "regular", "exchange": "NSE", "tradingsymbol": "DEMO",
+                          "transaction_type": "SELL", "quantity": 73, "product": "MIS", "order_type": "MARKET",
+                          "validity": "DAY"})
+        self.assertEqual(run(["flatten", "--symbol", "DEMO", "--qty", "0", "--orders", self.orders])[0], 1)
+        code, _, err = run(["flatten", "--symbol", "DEMO", "--orders", self.orders, "--portfolio", self.pf])
         self.assertEqual(code, 1)
-        self.assertNotIn("Traceback", err)
+        self.assertIn("nothing to flatten", err)
 
 
 if __name__ == "__main__":

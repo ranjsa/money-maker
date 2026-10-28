@@ -1,13 +1,22 @@
 {
+  "_notes": [
+    "Keep ONE of the two kite entries below. Checked against github.com/zerodha/kite-mcp-server on 2026-10-28.",
+    "kite: the hosted server at https://mcp.kite.trade/mcp. No install and no API key: you log in to Kite in the browser when the login tool asks. Its README says the hosted server leaves out place_order, modify_order and cancel_order, so it can read quotes, orders and positions but cannot place an order.",
+    "kite-self-hosted: build zerodha/kite-mcp-server yourself (go build -o kite-mcp-server) with your own Kite Connect API key and secret. Type them into this file only, never into the chat. It carries place_order, modify_order and cancel_order.",
+    "After a restart, open Customize > Connectors > kite and set place_order, modify_order and cancel_order to Needs approval (place_gtt_order, modify_gtt_order and delete_gtt_order too). Never Always allow.",
+    "Kite has no paper account. Keep \"broker\": \"paper\" in nse/config.json until you mean real money."
+  ],
   "mcpServers": {
-    "alpaca": {
-      "command": "uvx",
-      "args": ["alpaca-mcp-server"],
+    "kite": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mcp.kite.trade/mcp"]
+    },
+    "kite-self-hosted": {
+      "command": "/full/path/to/your/kite-mcp-server",
       "env": {
-        "ALPACA_API_KEY": "YOUR_PAPER_API_KEY_TYPED_HERE_NEVER_IN_CHAT",
-        "ALPACA_SECRET_KEY": "YOUR_PAPER_SECRET_KEY_TYPED_HERE_NEVER_IN_CHAT",
-        "ALPACA_PAPER_TRADE": "true",
-        "ALPACA_TOOLSETS": "account,trading,stock-data"
+        "APP_MODE": "stdio",
+        "KITE_API_KEY": "YOUR_KITE_API_KEY_TYPED_HERE_NEVER_IN_CHAT",
+        "KITE_API_SECRET": "YOUR_KITE_API_SECRET_TYPED_HERE_NEVER_IN_CHAT"
       }
     }
   }
