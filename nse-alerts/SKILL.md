@@ -1,5 +1,5 @@
 ---
-name: trader-alerts
+name: nse-alerts
 description: >-
   Price Alerts. Rings when a price, a stop or the opening bell hits. Turns
   the trade plan into three alerts in one go (the stop, the target and "flat

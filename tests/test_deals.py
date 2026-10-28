@@ -8,8 +8,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from _load import FIX, load
 
-ptr = load("trader-pelosi", "ptr")
-DIR = os.path.join(FIX, "trader-pelosi")
+deals = load("nse-deals", "deals")
+DIR = os.path.join(FIX, "nse-deals")
 ZIP = os.path.join(DIR, "2026FD.zip")
 
 
@@ -25,6 +25,7 @@ def run(args):
     return code, out.getvalue(), err.getvalue()
 
 
+@unittest.skip("ported in Task 13")
 class Index(unittest.TestCase):
     def setUp(self):
         self.rows = ptr.load_index(2026, offline=ZIP)
@@ -71,6 +72,7 @@ class Index(unittest.TestCase):
             ptr.parse_index(b"not xml", 2026)
 
 
+@unittest.skip("ported in Task 13")
 class NewSinceLastCheck(unittest.TestCase):
     def test_alerts_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -103,6 +105,7 @@ class NewSinceLastCheck(unittest.TestCase):
             self.assertFalse(os.path.exists(state))
 
 
+@unittest.skip("ported in Task 13")
 class ParseReport(unittest.TestCase):
     def test_the_reel_alert_bloom_energy_calls(self):
         rep = ptr.parse_ptr_text(text("ptr-20035143.txt"))

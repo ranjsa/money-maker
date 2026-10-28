@@ -1,5 +1,5 @@
 ---
-name: trader-news
+name: nse-news
 description: >-
   News Monitor. Tracks breaking news on every stock you watch and flags what
   moves it: Yahoo Finance headlines per ticker, each company's 8-K filings on

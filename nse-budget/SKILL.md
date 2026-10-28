@@ -1,5 +1,5 @@
 ---
-name: trader-budget
+name: nse-budget
 description: >-
   Budget Manager. Sizes every position to your budget and your max loss per
   trade. Reads the trade plan from trader-exit (entry, stop, target), finds

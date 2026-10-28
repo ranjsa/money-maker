@@ -1,5 +1,5 @@
 ---
-name: trader-scanner
+name: nse-scanner
 description: >-
   Chart Scanner. Scans thousands of charts for setups: opening-range
   breakouts, flags, oversold bounces. Builds the list of US-listed common

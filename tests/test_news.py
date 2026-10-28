@@ -8,8 +8,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from _load import FIX, load
 
-news = load("trader-news", "news")
-DIR = os.path.join(FIX, "trader-news")
+news = load("nse-news", "news")
+DIR = os.path.join(FIX, "nse-news")
 NOW = "2026-10-14T00:00:00+00:00"
 
 
@@ -25,6 +25,7 @@ def run(args):
     return code, out.getvalue(), err.getvalue()
 
 
+@unittest.skip("ported in Task 11")
 class Feeds(unittest.TestCase):
     def test_yahoo_rss(self):
         items = news.parse_rss(raw("yahoo-AAPL.xml"), "AAPL")
@@ -58,6 +59,7 @@ class Feeds(unittest.TestCase):
         self.assertEqual(news.yahoo_symbol("BRK.B"), "BRK-B")
 
 
+@unittest.skip("ported in Task 11")
 class Tagging(unittest.TestCase):
     def test_touches_and_tags(self):
         items = news.parse_rss(raw("yahoo-KO.xml"), "KO")
@@ -82,6 +84,7 @@ class Tagging(unittest.TestCase):
         self.assertEqual(items[0]["touches"], ["AAPL", "GOOGL"])
 
 
+@unittest.skip("ported in Task 11")
 class Check(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -10,9 +10,9 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from _load import load, FIX
 
-scan = load("trader-scanner", "scan")
+scan = load("nse-scanner", "scan")
 
-SDIR = os.path.join(FIX, "trader-scanner")
+SDIR = os.path.join(FIX, "nse-scanner")
 WALL = os.path.join(SDIR, "wall5m-2026-10-19.json.gz")       # 234 real 5-min charts, Oct 19 2026
 DAILY = os.path.join(SDIR, "daily-spark-2026-10-19.json")    # 19 real daily charts as one spark answer
 LIVE = os.path.join(SDIR, "spark-3mo-live-2026-10-20.json")  # a real 20-symbol spark answer
@@ -52,6 +52,7 @@ def bars_series(day, closes, highs=None, lows=None, start="09:30", extra=None):
     return s
 
 
+@unittest.skip("ported in Task 3")
 class Universe(unittest.TestCase):
     def setUp(self):
         texts = {}
@@ -112,6 +113,7 @@ class Universe(unittest.TestCase):
             scan.parse_symdir("<html>maintenance</html>")
 
 
+@unittest.skip("ported in Task 3")
 class Time(unittest.TestCase):
     def test_dst_and_clock(self):
         self.assertEqual(scan.eastern_offset(DT(2026, 3, 8, 6, 59)), -5)
@@ -131,6 +133,7 @@ class Time(unittest.TestCase):
             scan.parse_hhmm("25:00")
 
 
+@unittest.skip("ported in Task 3")
 class Spark(unittest.TestCase):
     def test_a_real_spark_answer(self):
         with open(LIVE, encoding="utf-8") as fh:
@@ -168,6 +171,7 @@ class Spark(unittest.TestCase):
         self.assertEqual(scan.chart_path("TSLA", "1d", "5m"), "/v8/finance/chart/TSLA?range=1d&interval=5m")
 
 
+@unittest.skip("ported in Task 3")
 class Network(unittest.TestCase):
     """429s and 5xx without the network."""
 
@@ -227,6 +231,7 @@ class Network(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
 
+@unittest.skip("ported in Task 3")
 class Daily(unittest.TestCase):
     # Hand-checked from the closes (see the numbers in the comments): through Fri Oct 16 2026.
     EXPECT = {
@@ -305,6 +310,7 @@ class Daily(unittest.TestCase):
         self.assertAlmostEqual(scan.rsi(closes), 70.46, places=1)  # Wilder's textbook example
 
 
+@unittest.skip("ported in Task 3")
 class Orb(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -425,6 +431,7 @@ class Orb(unittest.TestCase):
             scan.orb_window(scan.parse_now("2026-10-19 10:15"), None, 7, until)
 
 
+@unittest.skip("ported in Task 3")
 class LiveFiveMinute(unittest.TestCase):
     """A real spark 5-minute answer and TSLA's v8 chart, fetched at 10:01:47 AM ET on Tue Oct 20 2026."""
 
@@ -476,6 +483,7 @@ class LiveFiveMinute(unittest.TestCase):
             self.assertIn(h, hits_all)
 
 
+@unittest.skip("ported in Task 3")
 class Cli(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

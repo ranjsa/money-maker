@@ -1,5 +1,5 @@
 ---
-name: trader-exit
+name: nse-exit
 description: >-
   Exit Planner. Sets your stop and your target before you enter, so you know
   when to get out. Reads the entry from trader-entry (or a price you give),

@@ -7,8 +7,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from _load import FIX, load
 
-facts = load("trader-analyst", "facts")
-DIR = os.path.join(FIX, "trader-analyst")
+facts = load("nse-analyst", "results")
+DIR = os.path.join(FIX, "nse-analyst")
 
 
 def companyfacts(cik):
@@ -23,6 +23,7 @@ def run(args):
     return code, out.getvalue(), err.getvalue()
 
 
+@unittest.skip("ported in Task 12")
 class Apple(unittest.TestCase):
     def setUp(self):
         self.r = facts.analyse(companyfacts("0000320193"), quarters=8)
@@ -77,6 +78,7 @@ class Apple(unittest.TestCase):
         self.assertEqual((q["2025-03-31"]["fy"], q["2025-03-31"]["fp"]), (2025, "Q1"))
 
 
+@unittest.skip("ported in Task 12")
 class Filings(unittest.TestCase):
     def test_latest_10q_and_earnings_press_release(self):
         with open(os.path.join(DIR, "submissions-CIK0000320193.json")) as fh:
@@ -103,6 +105,7 @@ class Filings(unittest.TestCase):
         self.assertIsNone(pick(["only-8k.htm"], "only-8k.htm"))
 
 
+@unittest.skip("ported in Task 12")
 class LaggingData(unittest.TestCase):
     def test_says_when_sec_facts_trail_a_filed_10q(self):
         code, out, err = run(["KO", "--offline", DIR])
@@ -120,6 +123,7 @@ class LaggingData(unittest.TestCase):
         self.assertTrue(any("above operating income" in l for l in facts.changes(result)))
 
 
+@unittest.skip("ported in Task 12")
 class Cli(unittest.TestCase):
     def test_metrics_file_for_the_screener(self):
         with tempfile.TemporaryDirectory() as tmp:

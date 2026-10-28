@@ -1,5 +1,5 @@
 ---
-name: trader-pelosi
+name: nse-deals
 description: >-
   The Pelosi Tracker. Watches the stock trades members of Congress must
   disclose under the STOCK Act: reads the House Clerk's public Periodic

@@ -1,5 +1,5 @@
 ---
-name: trader-analyst
+name: nse-analyst
 description: >-
   The Earnings Analyst. Reads a company's reported numbers straight from SEC
   EDGAR (XBRL company facts from its 10-Qs and 10-Ks, plus the latest earnings

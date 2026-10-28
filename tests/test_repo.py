@@ -1,19 +1,21 @@
 import json
 import os
 import re
+import subprocess
+import sys
 import unittest
 
 from _load import ROOT
 
-# v2, the day-trading pack: the eleven folders the reel's repo card shows
-SKILLS = ["trader-scanner", "trader-news", "trader-entry", "trader-exit", "trader-timemachine",
-          "trader-risk", "trader-budget", "trader-broker", "trader-alerts", "trader-analyst",
-          "trader-pelosi"]
-ABOUT = ("11 Claude skills for day trading: scan thousands of charts, track breaking news, time every "
-         "entry and exit, and replay every outcome before you risk a dollar.")
+# the NSE port: the eleven folders the repo card shows
+SKILLS = ["nse-scanner", "nse-news", "nse-entry", "nse-exit", "nse-timemachine",
+          "nse-risk", "nse-budget", "nse-broker", "nse-alerts", "nse-analyst",
+          "nse-deals"]
+ABOUT = ("11 Claude skills for day trading on NSE: scan every EQ chart, track exchange filings and news, "
+         "time every entry and exit, and replay every outcome before you risk a rupee.")
 # skills on the way to an order carry the safety block
-ORDER_PATH = ["trader-scanner", "trader-entry", "trader-exit", "trader-timemachine", "trader-budget",
-              "trader-pelosi", "trader-risk", "trader-broker", "trader-alerts"]
+ORDER_PATH = ["nse-scanner", "nse-entry", "nse-exit", "nse-timemachine", "nse-budget",
+              "nse-deals", "nse-risk", "nse-broker", "nse-alerts"]
 V1_ONLY = ["trader-copycat", "trader-screener", "trader-tax", "trader-rebalance"]
 
 
@@ -26,7 +28,7 @@ def frontmatter(path):
 
 def every_text_file():
     for base, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".superpowers")]
         for f in files:
             if f.endswith((".md", ".py", ".json", ".csv", ".txt", ".xml")) or f == "LICENSE":
                 yield os.path.join(base, f)
@@ -39,8 +41,8 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+        root = sorted(d for d in os.listdir(ROOT) if d == ".claude-plugin" or not d.startswith("."))
+        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "docs", "tests"] + SKILLS))
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:
@@ -60,26 +62,41 @@ class Repo(unittest.TestCase):
     def test_plugin_manifest_points_at_the_root_skills(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json")) as fh:
             plugin = json.load(fh)
-        self.assertEqual(plugin["name"], "day-trader-skill")
+        self.assertEqual(plugin["name"], "nse-day-trader-skill")
         self.assertEqual(plugin["skills"], "./")
         self.assertEqual(plugin["description"], ABOUT)
         with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json")) as fh:
             market = json.load(fh)
-        self.assertEqual(market["name"], "day-trader-skill")
-        self.assertEqual(market["plugins"][0]["name"], "day-trader-skill")
+        self.assertEqual(market["name"], "nse-day-trader-skill")
+        self.assertEqual(market["plugins"][0]["name"], "nse-day-trader-skill")
 
     def test_readme_carries_the_reel_copy(self):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
             readme = " ".join(fh.read().split())
-        self.assertTrue(readme.startswith("# The Day Trader skill"))
+        self.assertTrue(readme.startswith("# The NSE Day Trader skill"))
         for line in (ABOUT,
-                     "https://github.com/Jakeschincariol/day-trader-skill install skill",
-                     "/plugin marketplace add Jakeschincariol/day-trader-skill",
-                     "/plugin install day-trader-skill@day-trader-skill",
+                     "https://github.com/tusharjha/nse-day-trader-skill install skill",
+                     "/plugin marketplace add tusharjha/nse-day-trader-skill",
+                     "/plugin install nse-day-trader-skill@nse-day-trader-skill",
                      "## Fine print"):
             self.assertIn(line, readme)
         for s in SKILLS:
             self.assertIn("/" + s, readme, s)
+
+    @unittest.skip("Task 1")
+    def test_common_blocks_identical(self):
+        self.assertEqual(subprocess.call([sys.executable, "tests/sync_common.py", "--check"], cwd=ROOT), 0)
+
+    @unittest.skip("unskipped in Task 14")
+    def test_no_us_leftovers(self):  # outside tests/fixtures and README credits
+        for path in every_text_file():
+            rel = os.path.relpath(path, ROOT)
+            if rel.startswith(os.path.join("tests", "fixtures")) or rel in ("README.md", "LICENSE"):
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            for word in ("New York", "NYSE", "EDGAR", "Alpaca", "Pelosi", "trader/"):
+                self.assertNotIn(word, text, "%s: %s" % (rel, word))
 
     def test_no_em_dashes_and_no_personal_email(self):
         for path in every_text_file():
@@ -119,7 +136,7 @@ class Repo(unittest.TestCase):
                         self.assertNotIn(bad, src, "%s/%s" % (s, f))
 
     def test_day_trading_limits_ship_in_the_example_config(self):
-        with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
+        with open(os.path.join(ROOT, "nse-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
         for k in ("max_loss_per_trade_usd", "max_daily_loss_usd", "max_trades_per_day",
                   "min_reward_risk", "require_stop", "no_entries_after", "flat_by"):
@@ -129,7 +146,7 @@ class Repo(unittest.TestCase):
         self.assertIs(cfg.get("allow_margin", False), False)
 
     def test_paper_trading_is_the_default(self):
-        with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
+        with open(os.path.join(ROOT, "nse-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
         self.assertIs(cfg["paper"], True)
         self.assertIs(cfg.get("allow_options", False), False)

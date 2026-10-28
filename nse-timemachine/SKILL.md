@@ -1,5 +1,5 @@
 ---
-name: trader-timemachine
+name: nse-timemachine
 description: >-
   Time Machine. Replays every possible outcome of a trade before you risk a
   dollar: 10,000 simulated sessions plus every past time the setup fired.

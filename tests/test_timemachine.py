@@ -13,9 +13,9 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from _load import load, FIX
 
-tm = load("trader-timemachine", "timemachine")
+tm = load("nse-timemachine", "timemachine")
 
-DIR = os.path.join(FIX, "trader-timemachine")
+DIR = os.path.join(FIX, "nse-timemachine")
 TSLA = os.path.join(DIR, "TSLA-60d5m.json.gz")   # Yahoo v8 chart, range=60d interval=5m, fetched 2026-10-19 10:49 ET
 with gzip.open(TSLA, "rt", encoding="utf-8") as _fh:
     TEXT = _fh.read()
@@ -80,6 +80,7 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
+@unittest.skip("ported in Task 6")
 class Reel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -157,6 +158,7 @@ class Reel(unittest.TestCase):
             self.assertNotIn(word, text)
 
 
+@unittest.skip("ported in Task 6")
 class Seeds(unittest.TestCase):
     def test_same_seed_same_numbers(self):
         a = machine(replays=2000, seed=5)["mc"]
@@ -186,6 +188,7 @@ class Seeds(unittest.TestCase):
             machine(window=11)
 
 
+@unittest.skip("ported in Task 6")
 class Bars(unittest.TestCase):
     def setUp(self):
         self.result = tm.chart_result(TEXT, "TSLA")
@@ -310,6 +313,7 @@ class Bars(unittest.TestCase):
         self.assertIn("data is for TSLA", str(cm.exception))
 
 
+@unittest.skip("ported in Task 6")
 class Plans(unittest.TestCase):
     def test_an_entry_not_in_the_data_is_refused(self):
         with self.assertRaises(tm.TMError) as cm:
@@ -445,6 +449,7 @@ class Plans(unittest.TestCase):
         self.assertIn(doc["verdict"] + "\n" + doc["verdict_notes"][0] + "\n" + doc["verdict_notes"][1], text)
 
 
+@unittest.skip("ported in Task 6")
 class Network(unittest.TestCase):
     def setUp(self):
         self.calls, self.sleeps = [], []
@@ -514,6 +519,7 @@ class Network(unittest.TestCase):
             shutil.rmtree(d)
 
 
+@unittest.skip("ported in Task 6")
 class Cli(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

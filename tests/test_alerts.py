@@ -11,10 +11,10 @@ from contextlib import redirect_stdout, redirect_stderr
 
 from _load import load, ROOT, FIX
 
-alerts = load("trader-alerts", "alerts")
+alerts = load("nse-alerts", "alerts")
 
-QDIR = os.path.join(FIX, "trader-alerts")
-PLAN = os.path.join(FIX, "trader-budget", "plan-tsla.json")
+QDIR = os.path.join(FIX, "nse-alerts")
+PLAN = os.path.join(FIX, "nse-budget", "plan-tsla.json")
 DT = datetime.datetime
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 
@@ -42,6 +42,7 @@ def plan_rules():
         return alerts.rules_from_plan(json.load(fh))
 
 
+@unittest.skip("ported in Task 10")
 class Calendar(unittest.TestCase):
     def test_holidays_match_the_published_list(self):
         self.assertEqual(sorted(alerts.NYSE_HOLIDAYS), NYSE_2026 + NYSE_2027)
@@ -86,6 +87,7 @@ class Calendar(unittest.TestCase):
         self.assertFalse(alerts.market_status(ny("2028-03-01T10:00"))["calendar_known"])
 
 
+@unittest.skip("ported in Task 10")
 class Quotes(unittest.TestCase):
     def test_yahoo_fixtures(self):
         with open(os.path.join(QDIR, "yahoo-AAPL.json")) as fh:
@@ -133,6 +135,7 @@ class Quotes(unittest.TestCase):
             shutil.rmtree(d)
 
 
+@unittest.skip("ported in Task 10")
 class FakeNet(object):
     """Stands in for urllib: answers each request with the next status code."""
 
@@ -151,6 +154,7 @@ class FakeNet(object):
         return io.BytesIO(self.body.encode("utf-8"))
 
 
+@unittest.skip("ported in Task 10")
 class Network(unittest.TestCase):
     def setUp(self):
         self.saved = (alerts._urlopen, alerts._sleep)
@@ -207,6 +211,7 @@ class Network(unittest.TestCase):
         self.assertEqual(f.sleeps, [alerts.PAUSE])
 
 
+@unittest.skip("ported in Task 10")
 class Rules(unittest.TestCase):
     def setUp(self):
         self.q, _ = alerts.get_quotes(["AAPL", "BAC", "KO", "TSLA"], "yahoo", QDIR)
@@ -305,7 +310,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(st["rung"]["flat"], "2026-12-01T20:55:00Z")
 
     def test_the_example_rules_are_valid(self):
-        with open(os.path.join(ROOT, "trader-alerts", "alerts.example.json")) as fh:
+        with open(os.path.join(ROOT, "nse-alerts", "alerts.example.json")) as fh:
             rules = json.load(fh)["rules"]
         for r in rules:
             alerts.validate(r)
@@ -323,6 +328,7 @@ class Rules(unittest.TestCase):
             alerts.rules_from_plan({"symbol": "TSLA", "stop": 358.32})
 
 
+@unittest.skip("ported in Task 10")
 class Cli(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

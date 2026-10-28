@@ -1,5 +1,5 @@
 ---
-name: trader-broker
+name: nse-broker
 description: >-
   Order Executor. Sends approved orders to your broker, paper trading by
   default, never without your yes. Shows each order as a plain ticket (a

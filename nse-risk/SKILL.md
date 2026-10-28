@@ -1,5 +1,5 @@
 ---
-name: trader-risk
+name: nse-risk
 description: >-
   Risk Manager. Checks every trade against your limits and stops anything
   over them, before it can reach the broker. For a day trade: a stop is
