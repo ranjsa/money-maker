@@ -28,9 +28,13 @@ order, so it is the strictest. A group reaches the market only after three
 separate gates, every time, for every group:
 
 1. **nse-risk passed this exact group today**, matched by fingerprint (the
-   sha256 of its legs), and the check is under 30 minutes old on the real
-   clock. An older check, or one run with a pinned `--now`, says RECHECK:
-   run nse-risk again.
+   sha256 of its legs), in its latest run, after every yes and every placed
+   order today (any group), and the check is under 30 minutes old on the real
+   clock. An older check, a PASS left over from an earlier run, a check made
+   before another trade, or one run with a pinned `--now`, says RECHECK: run
+   nse-risk again. A new entry is also never READY while NSE is closed or
+   outside `no_entries_before` / `no_entries_after` (IST, real clock); exits
+   are not held to the window.
 2. **The user typed an explicit yes for this one group** in the chat, naming
    the stock and the quantity: "yes 73 DEMO".
 3. **The user clicked Allow** on Claude's own permission card for each
@@ -63,9 +67,10 @@ is a real yes for that group, builds the flatten ticket and keeps the log in
 | --- | --- |
 | `nse/orders.json` | the proposed groups (nse-budget writes it; `flatten` replaces it) |
 | `nse/state/risk.json` | nse-risk's verdicts by fingerprint; only a fresh PASS from today is READY |
-| `nse/state/broker.json` | every yes, no, placed leg, fill and paper P&L, with each entry's max loss |
+| `nse/state/broker.json` | every yes, no, placed leg, fill and paper P&L, with each entry's max loss (nse-risk's measured one) |
+| `nse/state/paper-replay.json` | `paper.py run --approved-at` replays only; never counted by nse-risk |
 | `nse/portfolio.json` | cash and shares, updated by `ticket.py fill` (live fills only) |
-| `nse/config.json` | `"broker"`: `"paper"` (default) or `"kite"`; anything else is an error |
+| `nse/config.json` | `"broker"`: `"paper"` (default) or `"kite"`, and `"paper"` to match (true with paper, false with kite); anything else is an error |
 
 ## Paper by default
 
@@ -86,7 +91,17 @@ group to `paper.py run --group G`, which never sends anything anywhere:
   exchange, SEBI, stamp, GST).
 
 The fills go to `nse/state/broker.json` in the same shape as live ones, so
-nse-risk counts paper trades, orders and max loss like real ones. Run during
+nse-risk counts paper trades, orders and max loss like real ones (the max
+loss is measured from the entry fill: qty x (fill - stop) plus the round-trip
+charges). `run` needs the recorded yes and plays from its time; it refuses a
+new entry outside NSE hours or the entry window, and refuses to run at all
+with `"broker": "kite"`.
+
+`paper.py run --approved-at "YYYY-MM-DD HH:MM"` is a REPLAY: a what-if on a
+past session that writes `nse/state/paper-replay.json` only, never
+`broker.json`, and prints REPLAY. It is not a trade and nse-risk never counts
+it. `approve` itself always stamps the yes on the real clock and refuses
+`--now`. Run during
 the day, the position stays open until the bars reach a fill or flat_by:
 `paper.py status` lists it, and the same `run` command finishes it later.
 `--offline DIR` reads saved bars and never touches the network. A paper fill
@@ -118,7 +133,10 @@ Never Always allow. Read-only tools (`get_orders`, `get_positions`,
 `get_quotes`, `get_ltp`, `get_order_history`, `get_trades`) can be Always
 allow. In Claude Code keep them on ask: `"permissions": {"ask":
 ["mcp__kite__place_order", "mcp__kite__modify_order", "mcp__kite__cancel_order"]}`.
-Then set `"broker": "kite"` in `nse/config.json`. That is the user's own step.
+Then set both `"broker": "kite"` and `"paper": false` in `nse/config.json`.
+That is the user's own step. The two keys must agree: `"broker": "kite"` with
+`"paper": true` (or `"broker": "paper"` with `"paper": false`) is a config
+error, and nse-budget, nse-risk, `ticket.py` and `paper.py` all stop on it.
 
 **Verified tools.** Orders: `place_order`, `modify_order`, `cancel_order`,
 `get_orders`, `get_trades`, `get_order_history`, `get_order_trades`. GTT:
@@ -160,10 +178,11 @@ keys nse-budget writes are these names already; `ticket.py` only drops our
       --price P` (or `--leg target`). It prints the `cancel_order` call for the
       other leg with its order id. Cancel it at once, or it stays open and can
       sell again into a short position.
-6. By `flat_by` (15:10 IST, before the broker's MIS auto square-off around
-   15:20), anything still open is closed: cancel the open stop and target with
-   `cancel_order`, `ticket.py flatten --symbol S --qty Q`, `/nse-risk`, then
-   `show` and the user's yes as above.
+6. Kite only: by `flat_by` (15:10 IST, before the broker's MIS auto
+   square-off around 15:20), anything still open is closed: cancel the open
+   stop and target with `cancel_order`, `ticket.py flatten --symbol S --qty Q`,
+   `/nse-risk`, then `show` and the user's yes as above. Paper needs no
+   flatten: `paper.py run` squares off at `flat_by` itself.
 
 ## What it never does
 
@@ -171,7 +190,7 @@ keys nse-budget writes are these names already; `ticket.py` only drops our
 - Never places the stop or the target before the entry has filled.
 - Never places orders from a scheduled or background task: nobody is there to say yes.
 - Never asks for, reads, stores or repeats API keys, the Kite login or passwords.
-- Never switches `"broker"` from paper to kite. The user does that themselves.
+- Never switches `"broker"` from paper to kite (or `"paper"` to false). The user does that themselves.
 - Never promises a fill price: market and SL-M orders fill at what the market gives.
 
 ## Safety

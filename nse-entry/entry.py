@@ -469,18 +469,6 @@ def offline_file(path, sym):
     return path
 
 
-def offline_file(path, sym):
-    if os.path.isdir(path):
-        for name in (sym + ".json", sym + ".json.gz", yahoo_symbol(sym) + ".json", yahoo_symbol(sym) + ".json.gz"):
-            p = os.path.join(path, name)
-            if os.path.exists(p):
-                return p
-        raise EntryError("no offline file for %s in %s (want %s.json)" % (sym, path, sym))
-    if not os.path.exists(path):
-        raise EntryError("no offline file %s" % path)
-    return path
-
-
 def get_chart(sym, interval, day=None, offline=None, today=None):
     """Bars for one symbol, from Yahoo (range=1d for today) or a saved file."""
     sym = nse_symbol(sym)

@@ -65,7 +65,9 @@ If `nse/config.json` does not exist, copy `config.example.json` into
 - **product** "MIS" and **exchange** "NSE": intraday cash equity, EQ series only.
 - **charges**: optional overrides for the fee schedule (brokerage, STT, GST...). Empty uses the defaults.
 - **blocked**: symbols they never want to trade.
-- Keep **paper** true (and **broker** "paper") until they have watched it work.
+- Keep **paper** true (and **broker** "paper") until they have watched it work. The two must agree:
+  "broker" "kite" with "paper" false is live, "broker" "paper" with "paper" true is paper, and any
+  other mix is a config error in every tool.
 
 ## Step 2: size the trade
 

@@ -40,6 +40,7 @@ class PaperRun(unittest.TestCase):
         self.orders = os.path.join(self.d, "orders.json")
         shutil.copy(ORDERS_PATH, self.orders)
         self.state = os.path.join(self.d, "state", "broker.json")
+        self.replay = os.path.join(self.d, "state", "paper-replay.json")
         self.cfg = os.path.join(self.d, "config.json")
         self.saved_open = paper._open_url
 
@@ -76,18 +77,35 @@ class PaperRun(unittest.TestCase):
             code = paper.main(argv)
         return code, out.getvalue(), err.getvalue()
 
-    def status(self):
+    def status(self, path=None):
+        """Open positions in the replay file (the --approved-at runs) unless a path is given."""
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = paper.main(["status", "--state", self.state])
+            code = paper.main(["status", "--state", path or self.replay])
         return code, out.getvalue()
 
-    def records(self):
-        with open(self.state, encoding="utf-8") as fh:
+    def records(self, path=None):
+        """--approved-at runs are replays: they write nse/state/paper-replay.json, never broker.json."""
+        with open(path or self.replay, encoding="utf-8") as fh:
             return json.load(fh)["orders"]
 
-    def exit_rec(self):
-        return [r for r in self.records() if r.get("status") == "filled" and r.get("leg") != "entry"][-1]
+    def exit_rec(self, path=None):
+        return [r for r in self.records(path) if r.get("status") == "filled" and r.get("leg") != "entry"][-1]
+
+    def approve_at(self, at, broker="paper"):
+        """A yes as ticket.py approve records it in broker.json."""
+        fp = check.fingerprint(json.load(open(ORDERS_PATH))["orders"][0])
+        os.makedirs(os.path.dirname(self.state), exist_ok=True)
+        with open(self.state, "w", encoding="utf-8") as fh:
+            json.dump({"orders": [{"at": at, "date": at[:10], "status": "approved", "group": GROUP,
+                                   "fingerprint": fp, "broker": broker, "max_loss": 788.66}]}, fh)
+
+    def write_cfg(self, **over):
+        with open(os.path.join(ROOT, "nse-budget", "config.example.json"), encoding="utf-8") as fh:
+            c = json.load(fh)
+        c.update(over)
+        with open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump(c, fh)
 
     def test_stop_hit_at_the_trigger(self):
         self.set_bar("10:05", 1009.0, 1010.0, 1004.0, 1006.0)
@@ -110,10 +128,93 @@ class PaperRun(unittest.TestCase):
         self.assertEqual((placed[0]["kind"], placed[0]["max_loss"], placed[0]["legs"], placed[0]["broker"]),
                          ("entry", 788.66, 3, "paper"))
         self.assertEqual(placed[0]["fingerprint"], check.fingerprint(json.load(open(ORDERS_PATH))["orders"][0]))
+        # a replay is never in broker.json, so nse-risk never counts it
+        self.assertFalse(os.path.exists(self.state))
+        self.assertIn("REPLAY", text)
+
+    def test_a_recorded_yes_plays_into_broker_json_and_risk_counts_it(self):
+        self.approve_at("2026-10-27T09:35:00+05:30")
+        self.set_bar("10:05", 1009.0, 1010.0, 1004.0, 1006.0)
+        code, text, err = self.go(approved=None)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("REPLAY", text)
+        self.assertFalse(os.path.exists(self.replay))
+        recs = self.records(self.state)
+        self.assertEqual(self.exit_rec(self.state)["net_pnl"], float(net("1015.00", "1005.20")))
+        placed = [r for r in recs if r.get("status") == "placed"]
+        self.assertEqual((placed[0]["kind"], placed[0]["max_loss"], placed[0]["broker"]), ("entry", 788.66, "paper"))
         # nse-risk counts the paper trade like a live one
         res = check.check([], {"budget": 100000}, state={"orders": recs}, today="2026-10-27",
                           now=check.parse_now("2026-10-27 11:00"))
         self.assertEqual(res["today"], {"orders_placed": 3, "entries_placed": 1, "loss_at_risk": 788.66})
+
+    def test_the_logged_max_loss_is_measured_from_the_entry_fill(self):
+        # I6: the entry filled at 1017.00, not the plan's 1015.00: the loss at the stop is from 1017.00
+        self.approve_at("2026-10-27T09:37:00+05:30")
+        self.set_bar("09:40", 1017.0, 1019.0, 1014.0, 1018.0)
+        code, text, err = self.go(approved=None)
+        self.assertEqual(code, 0, err)
+        placed = [r for r in self.records(self.state) if r.get("status") == "placed"][0]
+        want = Decimal(QTY) * (Decimal("1017.00") - Decimal("1005.20")) + paper.round_trip(
+            QTY, Decimal("1017.00"), Decimal("1005.20"))
+        self.assertEqual(placed["max_loss"], float(want))
+        self.assertGreater(placed["max_loss"], 788.66)
+
+    def test_a_replay_prints_replay_and_never_touches_broker_json(self):
+        self.approve_at("2026-10-27T09:35:00+05:30")
+        with open(self.state, encoding="utf-8") as fh:
+            before = fh.read()
+        code, text, err = self.go(approved="2026-10-27 10:00")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(text.startswith("REPLAY"), text)
+        with open(self.state, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(self.records()[-1]["status"], "filled")
+        self.assertTrue(all(r.get("replay") for r in self.records()))
+
+    def test_no_paper_entry_outside_the_entry_window(self):
+        # I2
+        for when, want in (("2026-10-27 14:50", "no new entries after 14:45"),
+                           ("2026-10-27 09:20", "no new entries before 09:30")):
+            code, _, err = self.go(approved=when)
+            self.assertEqual(code, 1, when)
+            self.assertIn(want, err, when)
+            self.assertFalse(os.path.exists(self.replay))
+        self.approve_at("2026-10-27T14:50:00+05:30")
+        code, _, err = self.go(approved=None)
+        self.assertEqual(code, 1)
+        self.assertIn("no new entries after 14:45", err)
+        self.assertEqual(len(self.records(self.state)), 1)
+
+    def test_a_limit_entry_never_fills_after_the_window(self):
+        with open(self.orders, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        doc["orders"][0]["legs"][0].update(order_type="LIMIT", price=990.0)
+        with open(self.orders, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        self.set_bar("14:50", 995.0, 996.0, 985.0, 990.0)
+        code, text, err = self.go()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("entry       BUY", text)
+        self.assertIn("entry window", text)
+        self.assertFalse([r for r in self.records() if r.get("status") == "filled"])
+
+    def test_broker_and_paper_that_disagree_are_a_config_error(self):
+        # I5
+        for broker, flag in (("kite", True), ("paper", False)):
+            self.write_cfg(broker=broker, paper=flag)
+            code, _, err = self.go()
+            self.assertEqual(code, 1, broker)
+            self.assertIn('"broker"', err)
+            self.assertIn('"paper"', err)
+
+    def test_a_live_config_never_plays_a_recorded_yes_on_paper(self):
+        self.write_cfg(broker="kite", paper=False)
+        self.approve_at("2026-10-27T09:35:00+05:30", broker="kite")
+        code, _, err = self.go(approved=None)
+        self.assertEqual(code, 1)
+        self.assertIn("kite", err)
+        self.assertEqual(len(self.records(self.state)), 1)
 
     def test_a_gap_below_the_trigger_fills_at_the_open(self):
         self.set_bar("10:05", 1003.0, 1006.0, 1001.0, 1004.0)
@@ -207,7 +308,7 @@ class PaperRun(unittest.TestCase):
         self.set_bar("09:40", 1017.0, 1019.0, 1014.0, 1018.0)
         code, _, err = self.go(approved=None)
         self.assertEqual(code, 0, err)
-        ent = [r for r in self.records() if r.get("leg") == "entry"][0]
+        ent = [r for r in self.records(self.state) if r.get("leg") == "entry"][0]
         self.assertEqual((ent["price"], ent["time"]), (1017.0, "09:40"))
 
     def test_approval_after_flat_by_is_refused(self):

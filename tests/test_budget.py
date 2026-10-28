@@ -215,6 +215,33 @@ class Cli(unittest.TestCase):
             with open(out) as fh:
                 self.assertEqual(json.load(fh)["orders"][0]["group"], "DEMO-2026-10-27-2")
 
+    def test_broker_and_paper_that_disagree_are_a_config_error(self):
+        # I5: LIVE is "broker": "kite"; the two keys must agree
+        with tempfile.TemporaryDirectory() as d:
+            for over in ({"broker": "kite", "paper": True}, {"broker": "paper", "paper": False}):
+                cp = os.path.join(d, "config.json")
+                with open(cp, "w") as fh:
+                    json.dump(cfg(**over), fh)
+                out = os.path.join(d, "orders.json")
+                code, text, err = run(["--plan", PLAN, "--config", cp, "--portfolio", os.path.join(d, "none"),
+                                       "--now", NOW, "--write", out])
+                self.assertEqual(code, 1, over)
+                self.assertIn('"broker"', err)
+                self.assertIn('"paper"', err)
+                self.assertFalse(os.path.exists(out))
+
+    def test_a_kite_config_writes_a_live_orders_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            cp = os.path.join(d, "config.json")
+            with open(cp, "w") as fh:
+                json.dump(cfg(broker="kite", paper=False), fh)
+            out = os.path.join(d, "orders.json")
+            code, text, err = run(["--plan", PLAN, "--config", cp, "--portfolio", os.path.join(d, "none"),
+                                   "--now", NOW, "--write", out])
+            self.assertEqual(code, 0, err)
+            with open(out) as fh:
+                self.assertIs(json.load(fh)["paper"], False)
+
     def test_refusal_writes_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "plan.json")

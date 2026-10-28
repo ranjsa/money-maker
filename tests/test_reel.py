@@ -118,9 +118,11 @@ class Reel(unittest.TestCase):
     def test_every_hand_off_file_exists(self):
         for rel in ("universe.json", "watchlist.json", "entry.json", "plan.json", "timemachine.json", "prices.json",
                     "orders.json", "alerts.json", os.path.join("state", "bands.json"),
-                    os.path.join("state", "risk.json"), os.path.join("state", "broker.json")):
+                    os.path.join("state", "risk.json"), os.path.join("state", "paper-replay.json")):
             self.assertTrue(os.path.isfile(os.path.join(self.d, "nse", rel)), rel)
         self.assertFalse(os.path.exists(os.path.join(self.d, "trader")))
+        # nothing was approved (pinned clock) and the replay is never logged as a trade
+        self.assertFalse(os.path.exists(os.path.join(self.d, "nse", "state", "broker.json")))
 
     def test_scanner_finds_the_breakout(self):
         text = self.ok("scan")
@@ -192,7 +194,8 @@ class Reel(unittest.TestCase):
 
     def test_broker_shows_three_legs_and_will_not_take_a_yes_on_a_pinned_clock(self):
         # The tickets render, but a verdict from a pinned clock is never READY against the real one:
-        # the yes is refused and nothing is approved. The replay below goes through paper.py --approved-at.
+        # the yes is refused and nothing is approved. The replay below goes through paper.py --approved-at,
+        # which writes nse/state/paper-replay.json only.
         code, text, err = self.out["show"]
         for leg in ("leg 1, entry: BUY %d %s" % (REEL["budget"]["qty"], SYM),
                     "leg 2, stop: SELL %d %s" % (REEL["budget"]["qty"], SYM),
@@ -208,7 +211,8 @@ class Reel(unittest.TestCase):
     def test_paper_replay_pnl(self):
         text = self.ok("paper")
         p = REEL["paper"]
-        fills = [o for o in self.nse("state", "broker.json")["orders"] if o.get("status") == "filled"]
+        self.assertTrue(text.startswith("REPLAY"), text)
+        fills = [o for o in self.nse("state", "paper-replay.json")["orders"] if o.get("status") == "filled"]
         self.assertEqual([(o["leg"], round(o["price"], 2), o["time"]) for o in fills],
                          [("entry", p["entry_fill"], p["entry_time"]), (p["exit_leg"], p["exit_fill"], p["exit_time"])])
         last = fills[-1]

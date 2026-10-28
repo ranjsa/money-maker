@@ -125,6 +125,10 @@ lives only in the plan and not at the broker, a price too old to use, no
 band for a stock in a fresh band file, a series when neither list is loaded,
 a price off the tick.
 
+A LIVE account is `"broker": "kite"`. `"paper"` must match it (false with
+kite, true with paper): a config where the two disagree is an error and
+check.py stops with exit 1 before checking anything.
+
 ## Steps
 
 1. Once a trading day, refresh the bands: `check.py --refresh-bands`.

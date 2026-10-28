@@ -286,7 +286,6 @@ def yahoo_quote(sym):
 # --- nse charges: begin ---
 # Intraday equity charges (Zerodha-style). Shared by the charge-aware tools and kept identical by
 # tests/sync_common.py. Edit it in nse-exit/exit.py only. Override key by key under "charges" in config.
-import decimal as _decimal
 
 # rates checked against zerodha.com/charges on 2026-10-28
 CHARGES_DEFAULT = {
@@ -436,6 +435,19 @@ def window_check(now_utc, c):
         return ["window: no new entries after %s IST (it is %s)" % (after.strftime("%H:%M"),
                                                                    t.strftime("%H:%M"))], []
     return [], []
+
+
+def broker_mode(cfg):
+    """"paper" or "kite" from the config. LIVE is "broker": "kite"; "paper" must agree with it."""
+    cfg = cfg or {}
+    b = str(cfg.get("broker") or "paper").strip().lower()
+    if b not in ("paper", "kite"):
+        raise RiskError("config \"broker\" must be \"paper\" or \"kite\", not %r" % cfg.get("broker"))
+    if cfg.get("paper") is not None and bool(cfg.get("paper")) != (b == "paper"):
+        raise RiskError("config error: \"broker\" is \"%s\" but \"paper\" is %s. Set both: \"broker\": \"kite\" "
+                        "with \"paper\": false for a live account, or \"broker\": \"paper\" with \"paper\": true"
+                        % (b, "true" if cfg.get("paper") else "false"))
+    return b
 
 
 # ---------------------------------------------------------------- files and helpers
@@ -757,6 +769,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     prev_close   {SYM: previous close} from today (load_prices drops an older one)
     bands_as_of  IST date (YYYY-MM-DD) of the bands; missing, malformed or before today blocks entries
     universe     EQ symbols from nse/universe.json; None = not loaded"""
+    live_acct = broker_mode(cfg) == "kite"
     c = dict(DEFAULTS)
     c.update(cfg or {})
     prices = {str(k).upper(): _d(v) for k, v in (prices or {}).items() if _f(v)}
@@ -784,8 +797,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     cal = calendar_warning(local.date(), c)
     if cal:
         top_warn.append(cal)
-    if not c.get("paper", True):
-        top_warn.insert(0, "LIVE account (\"paper\": false): these orders use real money")
+    if live_acct:
+        top_warn.insert(0, "LIVE account (\"broker\": \"kite\"): these orders use real money")
     top_warn.extend(win_warns)
     seen = set()
     results = []
@@ -1132,7 +1145,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     return {
         "date": today,
         "now_ist": local.strftime("%Y-%m-%d %H:%M"),
-        "paper": bool(c.get("paper", True)),
+        "paper": not live_acct,
         "results": results,
         "pass": sum(1 for r in results if r["verdict"] == "PASS"),
         "block": sum(1 for r in results if r["verdict"] == "BLOCK"),

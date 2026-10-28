@@ -40,8 +40,13 @@ def other(symbol="RELIANCE", qty=20, group="RELIANCE-2026-10-27-1"):
     return g
 
 
+# The "real" clock the Flow tests run on: Tue 2026-10-27 10:30 IST, inside the entry window, so the
+# tests do not depend on the hour they run at. Flow.setUp pins ticket.real_now to it.
+FAKE_NOW = datetime.datetime(2026, 10, 27, 5, 0, tzinfo=datetime.timezone.utc)
+
+
 def real_now():
-    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    return FAKE_NOW
 
 
 def ist_today():
@@ -55,25 +60,32 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
-def write_risk(path, groups, verdict="PASS", date=None, now_ist=None, checked_at=None, reasons=None):
+def write_risk(path, groups, verdict="PASS", date=None, now_ist=None, checked_at=None, reasons=None, kind="entry",
+               max_loss="plan"):
     """nse/state/risk.json exactly as nse-risk writes it (check.write_verdicts), for these groups."""
     now = real_now()
     res = {"date": date or ist_today(),
            "now_ist": now_ist or ticket.to_ist(now).strftime("%Y-%m-%d %H:%M"),
            "paper": True, "pass": 0, "block": 0, "warnings": [], "cash_after": 0, "today": {},
            "results": [{"index": i, "group": g["group"], "symbol": g["legs"][0]["tradingsymbol"], "side": "BUY",
-                        "kind": "entry", "qty": g["legs"][0]["quantity"], "legs": len(g["legs"]),
-                        "max_loss": g["plan"]["max_loss"], "fingerprint": check.fingerprint(g),
+                        "kind": kind, "qty": g["legs"][0]["quantity"], "legs": len(g["legs"]),
+                        "max_loss": g["plan"].get("max_loss") if max_loss == "plan" else max_loss,
+                        "fingerprint": check.fingerprint(g),
                         "verdict": verdict, "reasons": reasons or [], "warnings": [], "info": []}
                        for i, g in enumerate(groups, 1)]}
     check.write_verdicts(path, res, "nse/orders.json")
-    if checked_at is not None:
-        with open(path, encoding="utf-8") as fh:
-            doc = json.load(fh)
-        for v in doc["verdicts"].values():
-            v["checked_at"] = checked_at
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh)
+    # write_verdicts stamps the machine clock; restamp this run (top level and its verdicts) on the
+    # pinned test clock, keeping verdicts merged from earlier runs as they were
+    stamp = checked_at or now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    fps = {check.fingerprint(g) for g in groups}
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    doc["checked_at"] = stamp
+    for fp, v in doc["verdicts"].items():
+        if fp in fps:
+            v["checked_at"] = stamp
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
 
 
 class ExplicitYes(unittest.TestCase):
@@ -113,6 +125,30 @@ class ExplicitYes(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("ambiguous", why)
         self.assertTrue(self.yes("yes 73 DEMO target 1034.60", g1, [g1, g2]))
+
+    def test_retractions_and_doubts_are_not_a_yes(self):
+        # I4: every doubt word, alone and in the phrasings people use to take a yes back
+        words = ("never", "mind", "scratch", "actually", "nah", "nope", "hmm", "hang", "abort", "forget",
+                 "cancel", "wait", "no", "not", "dont", "don't", "but", "maybe", "later", "hold", "unless", "if")
+        for w in words:
+            self.assertFalse(self.yes("yes 73 DEMO %s" % w), w)
+        mm = other("M&M", 10, "MM-1")
+        for r in ("yes 10 M&M never mind", "yes 10 M&M scratch that", "yes 10 M&M nah", "yes 10 M&M actually no",
+                  "yes 10 M&M nope", "yes 10 M&M hmm", "yes 10 M&M hang on", "yes 10 M&M abort",
+                  "yes 10 M&M forget it", "yes 10 M&M cancel", "yes 10 M&M wait"):
+            self.assertFalse(self.yes(r, mm, [mm]), r)
+        self.assertTrue(self.yes("yes 10 M&M", mm, [mm]))
+
+    def test_stop_names_the_stop_price_to_pick_between_two_groups(self):
+        # I4: "stop" is not a doubt word: it picks the group by its stop price
+        g1 = demo()
+        g2 = demo(group="DEMO-2026-10-27-2")
+        g2["legs"][1]["trigger_price"] = 1004.0
+        g2["plan"] = dict(g2["plan"], stop=1004.0, max_loss=None)
+        ok, why = ticket.parse_yes("yes 73 DEMO stop 1005.2", g1, [g1, g2])
+        self.assertTrue(ok, why)
+        self.assertFalse(self.yes("yes 73 DEMO stop 1005.2", g2, [g1, g2]))
+        self.assertTrue(self.yes("yes 73 DEMO stop 1004", g2, [g1, g2]))
 
     def test_symbols_with_ampersand_and_hyphen(self):
         mm = other("M&M", 10, "MM-1")
@@ -188,8 +224,11 @@ class Flow(unittest.TestCase):
         self.risk = os.path.join(self.d, "state", "risk.json")
         self.state = os.path.join(self.d, "state", "broker.json")
         self.pf = os.path.join(self.d, "portfolio.json")
+        self.saved_now = ticket.real_now
+        ticket.real_now = real_now
 
     def tearDown(self):
+        ticket.real_now = self.saved_now
         shutil.rmtree(self.d)
 
     def args(self, *extra):
@@ -204,6 +243,7 @@ class Flow(unittest.TestCase):
         with open(self.cfg, encoding="utf-8") as fh:
             c = json.load(fh)
         c["broker"] = broker
+        c["paper"] = broker != "kite"   # the two keys must agree
         with open(self.cfg, "w", encoding="utf-8") as fh:
             json.dump(c, fh)
 
@@ -479,6 +519,166 @@ class Flow(unittest.TestCase):
         code, _, err = run(["flatten", "--symbol", "DEMO", "--orders", self.orders, "--portfolio", self.pf])
         self.assertEqual(code, 1)
         self.assertIn("nothing to flatten", err)
+
+    # ------------------------------------------------ I1: a PASS from an earlier run, or before a trade
+    def two_groups(self):
+        with open(self.orders, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        doc["orders"].append(other())
+        with open(self.orders, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return doc["orders"]
+
+    def stamp(self, minutes):
+        t = FAKE_NOW + datetime.timedelta(minutes=minutes)
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ"), ticket.to_ist(t).strftime("%Y-%m-%d %H:%M")
+
+    def test_a_pass_from_an_earlier_run_is_not_ready(self):
+        a, b = demo(), other()
+        at, ist = self.stamp(-10)
+        write_risk(self.risk, [a], checked_at=at, now_ist=ist)
+        at, ist = self.stamp(-5)
+        write_risk(self.risk, [b], checked_at=at, now_ist=ist)       # the latest run checked only B
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1, text)
+        self.assertIn("RECHECK", text)
+        self.assertIn("earlier risk run", text)
+        self.assertIn("run nse-risk again", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_a_pass_from_before_another_trade_is_not_ready(self):
+        # 10:20 both pass; the user takes RELIANCE at 10:30; DEMO's 10:20 PASS no longer counts
+        groups = self.two_groups()
+        at, ist = self.stamp(-10)
+        write_risk(self.risk, groups, checked_at=at, now_ist=ist)
+        code, text, _ = run(self.args("approve", "--index", "2", "--reply", "yes 20 RELIANCE"))
+        self.assertEqual(code, 0, text)
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertEqual(code, 1, text)
+        self.assertIn("RECHECK", text)
+        self.assertIn("after this risk check", text)
+        self.assertNotIn("READY: nse-risk PASS", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 1)
+        self.assertIn("RECHECK", err)
+        # a fresh run after the trade counts again
+        ticket.real_now = lambda: FAKE_NOW + datetime.timedelta(minutes=2)
+        at, ist = self.stamp(1)
+        write_risk(self.risk, groups, checked_at=at, now_ist=ist)
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertEqual(code, 0, text)
+        self.assertIn("READY: nse-risk PASS", text)
+
+    def test_a_paper_placed_record_after_the_check_is_not_ready(self):
+        write_risk(self.risk, [demo()], checked_at=self.stamp(-10)[0], now_ist=self.stamp(-10)[1])
+        os.makedirs(os.path.dirname(self.state), exist_ok=True)
+        with open(self.state, "w", encoding="utf-8") as fh:
+            json.dump({"orders": [{"at": ticket.ist_iso(FAKE_NOW - datetime.timedelta(minutes=5)),
+                                   "date": ist_today(), "status": "placed", "group": "X-1", "fingerprint": "x",
+                                   "symbol": "X", "side": "BUY", "kind": "entry", "max_loss": 300.0}]}, fh)
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1, text)
+        self.assertIn("after this risk check", text)
+
+    # ------------------------------------------------ I2: the entry window on the real clock
+    def at_clock(self, ist_text):
+        t = ticket.parse_now(ist_text)
+        ticket.real_now = lambda: t
+        return t
+
+    def test_no_entry_is_ready_after_no_entries_after(self):
+        t = self.at_clock("2026-10-27 14:50")
+        write_risk(self.risk, [demo()], checked_at=t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   now_ist="2026-10-27 14:44")
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 1, text)
+        self.assertIn("no new entries after 14:45 IST (it is 14:50)", text)
+        self.assertNotIn("READY: nse-risk PASS", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 1)
+        self.assertIn("no new entries after 14:45", err)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_no_entry_is_ready_before_no_entries_before_or_when_closed(self):
+        for clock, want in (("2026-10-27 09:20", "no new entries before 09:30 IST"),
+                            ("2026-10-31 10:30", "NSE is closed"),
+                            ("2026-10-27 15:40", "NSE is closed")):
+            t = self.at_clock(clock)
+            write_risk(self.risk, [demo()], date=clock[:10], checked_at=t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       now_ist=clock)
+            code, text, _ = run(self.args("show"))
+            self.assertEqual(code, 1, clock)
+            self.assertIn(want, text, clock)
+            self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))[0], 1, clock)
+            self.assertFalse(os.path.exists(self.state))
+
+    def test_an_exit_is_ready_after_the_entry_window(self):
+        t = self.at_clock("2026-10-27 15:05")
+        run(["flatten", "--symbol", "DEMO", "--qty", "73", "--orders", self.orders, "--portfolio", self.pf,
+             "--config", self.cfg])
+        with open(self.orders, encoding="utf-8") as fh:
+            g = json.load(fh)["orders"][0]
+        g["plan"] = {"max_loss": None}
+        write_risk(self.risk, [g], kind="exit", checked_at=t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   now_ist="2026-10-27 15:05")
+        code, text, _ = run(self.args("show"))
+        self.assertEqual(code, 0, text)
+        self.assertIn("READY: nse-risk PASS", text)
+
+    # ------------------------------------------------ I3: the yes is stamped on the real clock
+    def test_approve_refuses_a_pinned_clock(self):
+        write_risk(self.risk, [demo()])
+        code, text, err = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO",
+                                        "--now", "2026-10-27 10:30"))
+        self.assertEqual(code, 1)
+        self.assertIn("--now", err)
+        self.assertFalse(os.path.exists(self.state))
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.state_doc()["orders"][0]["at"], "2026-10-27T10:30:00+05:30")
+
+    # ------------------------------------------------ I5: broker and paper must agree
+    def set_cfg(self, **over):
+        with open(self.cfg, encoding="utf-8") as fh:
+            c = json.load(fh)
+        c.update(over)
+        with open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump(c, fh)
+
+    def test_broker_and_paper_that_disagree_are_a_config_error(self):
+        write_risk(self.risk, [demo()])
+        for broker, paper in (("kite", True), ("paper", False)):
+            self.set_cfg(broker=broker, paper=paper)
+            for argv in (self.args("show"), self.args("approve", "--index", "1", "--reply", "yes 73 DEMO")):
+                code, text, err = run(argv)
+                self.assertEqual(code, 1, (broker, paper))
+                self.assertIn('"broker"', err)
+                self.assertIn('"paper"', err)
+                self.assertNotIn("READY", text)
+            self.assertFalse(os.path.exists(self.state))
+
+    # ------------------------------------------------ I6: the logged max loss is nse-risk's measured one
+    def test_the_placed_max_loss_is_the_risk_verdicts(self):
+        self.set_broker("kite")
+        write_risk(self.risk, [demo()], max_loss=812.4)
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.state_doc()["orders"][0]["max_loss"], 812.4)
+        run(self.args("result", "--index", "1", "--leg", "entry", "--status", "placed", "--order-id", "111"))
+        placed = [r for r in self.state_doc()["orders"] if r["status"] == "placed"][0]
+        self.assertEqual(placed["max_loss"], 812.4)
+        res = check.check([], {"budget": 100000}, state=self.state_doc(), today=ist_today(), now=real_now())
+        self.assertEqual(res["today"]["loss_at_risk"], 812.4)
+
+    def test_without_a_measured_max_loss_the_plan_is_used_with_a_warning(self):
+        write_risk(self.risk, [demo()], max_loss=None)
+        code, text, _ = run(self.args("approve", "--index", "1", "--reply", "yes 73 DEMO"))
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.state_doc()["orders"][0]["max_loss"], 788.66)
+        self.assertIn("WARNING", text)
+        self.assertIn("plan", text)
 
 
 if __name__ == "__main__":

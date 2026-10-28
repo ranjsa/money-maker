@@ -7,14 +7,20 @@ work around the one moment that matters, your yes:
   show      renders each proposed group (entry, stop-loss, target) leg by leg
             in plain words, plus the exact JSON Claude will send to the Kite
             MCP place_order tool for each leg. A group is READY only if
-            nse-risk passed THIS exact group (matched by fingerprint) today,
-            less than 30 minutes ago on the real clock, and nobody has decided
-            on it yet. An older or clock-pinned check says RECHECK.
+            nse-risk passed THIS exact group (matched by fingerprint) today in
+            its latest run, less than 30 minutes ago on the real clock, after
+            every yes and placed order today, and nobody has decided on it
+            yet. An older, earlier-run, pre-trade or clock-pinned check says
+            RECHECK. A new entry is never READY while NSE is closed or outside
+            no_entries_before / no_entries_after (exits are).
   approve   records your explicit yes for ONE group, with your reply word for
             word. The reply must start with yes and name the stock and the
             quantity ("yes 73 DEMO"). It refuses "yes to all", "sure", "ok",
             a yes that names a different stock or amount, a yes that could
-            mean two groups, and any group that is not READY. With
+            mean two groups, a yes taken back ("never mind", "scratch that",
+            "actually", "nah"...), and any group that is not READY. The yes
+            is stamped on the real clock; --now is refused. The logged max
+            loss is nse-risk's measured one. With
             "broker": "paper" (the default) it hands the group to paper.py;
             with "broker": "kite" it prints the place_order call for the entry.
   decline   records a no.
@@ -44,8 +50,10 @@ target are three separate orders. Place the entry; only after it fills place
 the stop and the target; when one of them fills, cancel the other.
 
 Everything is written to nse/state/broker.json (append only). Dates are IST
-dates; --now "2026-10-27 10:15" pins the date of the records (the freshness of
-the risk check is always judged on the real clock). Not financial advice.
+dates; --now "2026-10-27 10:15" pins the date of the records, except approve,
+which refuses it (the freshness of the risk check and the entry window are
+always judged on the real clock). "broker" and "paper" in the config must
+agree ("kite" with false, "paper" with true). Not financial advice.
 """
 
 import argparse
@@ -269,8 +277,10 @@ PRODUCT_WORDS = {"MIS": "intraday (MIS)", "CNC": "delivery (CNC)", "NRML": "carr
 VALIDITY_WORDS = {"DAY": "good for today", "IOC": "immediate or cancel"}
 YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
-DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "stop", "but", "maybe", "later",
-               "hold", "unless", "if"}
+# "stop" is not here: "yes 73 DEMO stop 1005.2" names the group by its stop price.
+DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "but", "maybe", "later", "hold", "unless", "if",
+               "never", "mind", "scratch", "actually", "nah", "nope", "hmm", "hang", "abort", "forget"}
+ENTRY_WINDOW = ("09:30", "14:45")   # nse-risk's defaults for no_entries_before / no_entries_after
 NUM_RE = re.compile(r"(?<![A-Za-z&\-])\d[\d,]*(?:\.\d+)?(?![A-Za-z&\-])")
 
 
@@ -331,10 +341,48 @@ def _num(v):
 
 
 def broker_of(cfg):
-    b = str((cfg or {}).get("broker", "paper") or "paper").strip().lower()
+    """"paper" or "kite". LIVE is "broker": "kite"; "paper" must agree with it, or it is a config error."""
+    cfg = cfg or {}
+    b = str(cfg.get("broker", "paper") or "paper").strip().lower()
     if b not in BROKERS:
-        raise TicketError("config \"broker\" must be \"paper\" or \"kite\", not %r" % (cfg or {}).get("broker"))
+        raise TicketError("config \"broker\" must be \"paper\" or \"kite\", not %r" % cfg.get("broker"))
+    if cfg.get("paper") is not None and bool(cfg.get("paper")) != (b == "paper"):
+        raise TicketError("config error: \"broker\" is \"%s\" but \"paper\" is %s. Set both: \"broker\": \"kite\" "
+                          "with \"paper\": false for a live account, or \"broker\": \"paper\" with \"paper\": true"
+                          % (b, "true" if cfg.get("paper") else "false"))
     return b
+
+
+def _hhmm(value, key):
+    if value in (None, "", False):
+        return None
+    m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", str(value).strip())
+    if not m:
+        raise TicketError("%s must be an IST time like \"09:30\", got %r" % (key, value))
+    return datetime.time(int(m.group(1)), int(m.group(2)))
+
+
+def entry_window(now_utc, cfg):
+    """None when a new entry may go in now (real clock, IST), else why not. Same rules as nse-risk:
+    NSE must be open, and outside a special session the time must be inside no_entries_before /
+    no_entries_after. Exits are never held to this."""
+    cfg = cfg or {}
+    st = market_status(now_utc, cfg)
+    local = to_ist(now_utc)
+    stamp = local.strftime("%a %Y-%m-%d %H:%M")
+    if st["state"] != "open":
+        nxt = st["next_open"].replace("T", " ")[:16] + " IST" if st["next_open"] else "unknown"
+        return "NSE is closed (%s, %s IST); next open %s" % (st["reason"] or "closed", stamp, nxt)
+    if _special(local.date(), cfg):
+        return None
+    t = local.time().replace(second=0, microsecond=0)
+    before = _hhmm(cfg.get("no_entries_before", ENTRY_WINDOW[0]), "no_entries_before")
+    after = _hhmm(cfg.get("no_entries_after", ENTRY_WINDOW[1]), "no_entries_after")
+    if before is not None and t < before:
+        return "no new entries before %s IST (it is %s)" % (before.strftime("%H:%M"), t.strftime("%H:%M"))
+    if after is not None and t > after:
+        return "no new entries after %s IST (it is %s)" % (after.strftime("%H:%M"), t.strftime("%H:%M"))
+    return None
 
 
 # ---------------------------------------------------------------- the group
@@ -568,13 +616,41 @@ def risk_verdict(risk, fp, today, now_real):
     if ran is not None and abs(now_real - ran) > limit:
         return v, ("RECHECK", "the risk check ran with a pinned clock (%s IST, not now): run nse-risk again"
                    % v.get("now_ist", v.get("now")))
+    # risk.json merges verdicts across runs: only the latest run's own verdicts count
+    if not v.get("checked_at") or v.get("checked_at") != risk.get("checked_at"):
+        return v, ("RECHECK", "this PASS is from an earlier risk run (%s), not the latest one (%s): "
+                              "run nse-risk again" % (v.get("checked_at") or "no time", risk.get("checked_at") or "no time"))
     return v, None
 
 
-def status_of(group, risk, state, today, now_real=None):
+def after_trades(v, state, today):
+    """None when the verdict was checked after every yes and every placed order today (any group),
+    else why not: a trade since the check changes the trades, the orders and the loss for the day."""
+    checked = _parse_time(v.get("checked_at"), _UTC)
+    for rec in state.get("orders", []):
+        if rec.get("status") not in ("approved", "placed") or rec_day(rec) != today:
+            continue
+        at = _parse_time(rec.get("at"), IST)
+        if checked is None or at is None or at >= checked:
+            return ("RECHECK", "%s %s %s was %s at %s, after this risk check (%s): the day's trades and loss "
+                               "changed, run nse-risk again"
+                    % (rec.get("side") or "", rec.get("qty") or "", rec.get("symbol") or rec.get("group") or "?",
+                       rec.get("status"), rec.get("at") or "an unknown time", v.get("checked_at")))
+    return None
+
+
+def is_entry(group, v):
+    kind = str((v or {}).get("kind") or "").lower()
+    if kind:
+        return kind == "entry"
+    return leg(group, "entry") is not None
+
+
+def status_of(group, risk, state, today, now_real=None, cfg=None):
     """(ready, label, verdict record)"""
     fp = fingerprint(group)
-    v, bad = risk_verdict(risk, fp, today, now_real or real_now())
+    now_real = now_real or real_now()
+    v, bad = risk_verdict(risk, fp, today, now_real)
     if bad:
         return False, "%s: %s" % bad, v
     if v.get("verdict") != "PASS":
@@ -585,6 +661,13 @@ def status_of(group, risk, state, today, now_real=None):
         if st == "approved":
             return False, "APPROVED by you at %s, waiting for the order calls" % rec.get("at"), v
         return False, "DONE: %s at %s" % (st, rec.get("at")), v
+    stale = after_trades(v, state, today)
+    if stale:
+        return False, "%s: %s" % stale, v
+    if is_entry(group, v):
+        shut = entry_window(now_real, cfg)
+        if shut:
+            return False, "OUTSIDE THE ENTRY WINDOW: %s. Exits are not held to this." % shut, v
     when = v.get("now_ist", "")[11:16]
     return True, "READY: nse-risk PASS%s, waiting for your yes" % (" at %s IST" % when if when else ""), v
 
@@ -597,7 +680,7 @@ def _json_lines(obj, pad):
 
 def render(group, idx, total, cfg, risk, state, today):
     broker = broker_of(cfg)
-    ready, label, v = status_of(group, risk, state, today)
+    ready, label, v = status_of(group, risk, state, today, cfg=cfg)
     acct = ("PAPER, local paper engine, no real money" if broker == "paper"
             else "ZERODHA KITE, LIVE ACCOUNT, REAL MONEY")
     lines = ["ORDER GROUP %d of %d: %s, %s" % (idx, total, group.get("group", "?"), acct)]
@@ -631,7 +714,7 @@ def render(group, idx, total, cfg, risk, state, today):
 
 def ticket_json(group, idx, cfg, risk, state, today):
     broker = broker_of(cfg)
-    ready, label, v = status_of(group, risk, state, today)
+    ready, label, v = status_of(group, risk, state, today, cfg=cfg)
     loss, stop = max_loss(group)
     return {"index": idx, "group": group.get("group"), "ready": ready, "status": label, "plain": plain(group),
             "fingerprint": fingerprint(group), "broker": broker, "paper": broker == "paper", "tool": "place_order",
@@ -691,6 +774,9 @@ def apply_fill(portfolio_path, cfg, symbol, side, qty, price, date):
 # ---------------------------------------------------------------- commands
 
 def _clock(a):
+    if not getattr(a, "now", None):
+        now = real_now()
+        return now, to_ist(now).date().isoformat()
     try:
         now = parse_now(getattr(a, "now", None))
     except ValueError as e:
@@ -709,6 +795,7 @@ def _groups(path):
 def _load(a):
     groups = _groups(a.orders)
     cfg = read_json(a.config, "config", required=False) or {}
+    broker_of(cfg)
     risk = read_json(a.risk, "risk check", required=False)
     state = load_state(a.state)
     now, today = _clock(a)
@@ -746,20 +833,30 @@ def cmd_approve(a):
     groups, cfg, risk, state, today, now = _load(a)
     broker = broker_of(cfg)
     group = _pick(groups, a.index)
-    ready, label, v = status_of(group, risk, state, today)
+    ready, label, v = status_of(group, risk, state, today, cfg=cfg)
     if not ready:
         raise TicketError("group %d is not ready: %s" % (a.index, label))
+    if a.now:
+        raise TicketError("approve records your yes on the real clock: --now cannot date an approval "
+                          "(to play a past session, use paper.py run --approved-at, a replay that is never counted)")
     ok, why = parse_yes(a.reply, group, groups)
     if not ok:
         print("Not recorded: %s. Ask the user again with the ticket for group %d." % (why, a.index))
         return 1
-    loss, stop = max_loss(group)
+    now = real_now()
+    plan_loss, stop = max_loss(group)
+    loss = _f((v or {}).get("max_loss"))
+    if loss is None:
+        loss = plan_loss
+        print("WARNING: nse-risk recorded no measured max loss for this group; the log uses the plan's "
+              "estimate %s, so the daily loss may be undercounted. Run nse-risk again to measure it."
+              % (inr(loss) if loss is not None else "(none)"))
     main = main_leg(group)
     rec = {"at": ist_iso(now), "date": today, "index": a.index, "group": group.get("group"),
            "fingerprint": fingerprint(group), "symbol": group_symbol(group),
            "side": str(main.get("transaction_type", "")).upper(), "qty": group_qty(group),
            "kind": (v or {}).get("kind") or ("entry" if leg(group, "entry") else "exit"), "max_loss": loss,
-           "stop": stop, "plain": plain(group), "status": "approved", "reply": a.reply,
+           "plan_max_loss": plan_loss, "stop": stop, "plain": plain(group), "status": "approved", "reply": a.reply,
            "paper": broker == "paper", "broker": broker}
     state["orders"].append(rec)
     write_json(a.state, state)

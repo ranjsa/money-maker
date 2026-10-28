@@ -639,6 +639,16 @@ class Cli(unittest.TestCase):
         self.assertIn("no symbols in", err)
 
 
+class Source(unittest.TestCase):
+    def test_offline_file_is_defined_once(self):
+        # M4: a second copy of offline_file silently shadowed the first
+        import ast
+        with open(os.path.join(ROOT, "nse-entry", "entry.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+        self.assertEqual([n for n in set(names) if names.count(n) > 1], [])
+
+
 class RealData(unittest.TestCase):
     """RELIANCE.NS's real 2026-10-27 session, against what the tool said when it was captured."""
 

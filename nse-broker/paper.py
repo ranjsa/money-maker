@@ -20,13 +20,23 @@ sending it anywhere:
                      ends at flat_by (15:10 -> the 15:05 to 15:10 bar)
            P&L = (exit - entry) x qty - round-trip charges. The fills go to
            nse/state/broker.json in the same shape as live fills, so nse-risk
-           counts paper trades, orders and max loss exactly like live ones.
-           If the bars stop before flat_by (run during the day), the position
-           stays open; run the same command later to finish it.
+           counts paper trades, orders and max loss exactly like live ones
+           (the max loss is measured from the entry fill: qty x (fill - stop)
+           plus the round-trip charges). If the bars stop before flat_by (run
+           during the day), the position stays open; run the same command
+           later to finish it.
+           It needs your yes (ticket.py approve) and plays from its time. No
+           new entry outside NSE hours or the no_entries_before /
+           no_entries_after window, and none with "broker": "kite".
+  run --approved-at T
+           a REPLAY of a past session as if the yes came at T: it writes only
+           nse/state/paper-replay.json (next to --state), never broker.json,
+           so nse-risk never counts it. Nothing needs a yes because nothing
+           is traded, not even on paper.
   status   lists open paper positions.
 
     python3 paper.py run --group DEMO-2026-10-27-1
-    python3 paper.py run --group DEMO-2026-10-27-1 --approved-at "2026-10-27 09:35" --offline bars/
+    python3 paper.py run --group DEMO-2026-10-27-1 --approved-at "2026-10-27 09:35" --offline bars/   # replay
     python3 paper.py status
 
 --offline DIR reads DIR/<SYMBOL>.json (a saved Yahoo chart) and never touches
@@ -246,7 +256,6 @@ def yahoo_quote(sym):
 # --- nse charges: begin ---
 # Intraday equity charges (Zerodha-style). Shared by the charge-aware tools and kept identical by
 # tests/sync_common.py. Edit it in nse-exit/exit.py only. Override key by key under "charges" in config.
-import decimal as _decimal
 
 # rates checked against zerodha.com/charges on 2026-10-28
 CHARGES_DEFAULT = {
@@ -305,8 +314,63 @@ BAR = 5  # minutes
 EXIT_LEGS = ("stop", "target", "square-off")
 
 
+ENTRY_WINDOW = ("09:30", "14:45")   # nse-risk's defaults for no_entries_before / no_entries_after
+REPLAY_FILE = "paper-replay.json"
+
+
 class PaperError(Exception):
     pass
+
+
+def broker_mode(cfg):
+    """"paper" or "kite". LIVE is "broker": "kite"; "paper" must agree with it, or it is a config error."""
+    cfg = cfg or {}
+    b = str(cfg.get("broker") or "paper").strip().lower()
+    if b not in ("paper", "kite"):
+        raise PaperError("config \"broker\" must be \"paper\" or \"kite\", not %r" % cfg.get("broker"))
+    if cfg.get("paper") is not None and bool(cfg.get("paper")) != (b == "paper"):
+        raise PaperError("config error: \"broker\" is \"%s\" but \"paper\" is %s. Set both: \"broker\": \"kite\" "
+                         "with \"paper\": false for a live account, or \"broker\": \"paper\" with \"paper\": true"
+                         % (b, "true" if cfg.get("paper") else "false"))
+    return b
+
+
+def _hhmm(value, key):
+    if value in (None, "", False):
+        return None
+    m = _re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", str(value).strip())
+    if not m:
+        raise PaperError("%s must be an IST time like \"09:30\", got %r" % (key, value))
+    return _dt.time(int(m.group(1)), int(m.group(2)))
+
+
+def entry_window(now_utc, cfg):
+    """None when a new entry may go in at now_utc, else why not (nse-risk's rules: NSE open, and
+    outside a special session inside no_entries_before / no_entries_after)."""
+    cfg = cfg or {}
+    st = market_status(now_utc, cfg)
+    local = to_ist(now_utc)
+    if st["state"] != "open":
+        return "NSE is closed (%s, %s IST)" % (st["reason"] or "closed", local.strftime("%a %Y-%m-%d %H:%M"))
+    if _special(local.date(), cfg):
+        return None
+    t = local.time().replace(second=0, microsecond=0)
+    before = _hhmm(cfg.get("no_entries_before", ENTRY_WINDOW[0]), "no_entries_before")
+    after = _hhmm(cfg.get("no_entries_after", ENTRY_WINDOW[1]), "no_entries_after")
+    if before is not None and t < before:
+        return "no new entries before %s IST (it is %s)" % (before.strftime("%H:%M"), t.strftime("%H:%M"))
+    if after is not None and t > after:
+        return "no new entries after %s IST (it is %s)" % (after.strftime("%H:%M"), t.strftime("%H:%M"))
+    return None
+
+
+def entry_until(day, cfg):
+    """Aware UTC start of the last bar a new entry may fill in (no_entries_after), or None."""
+    cfg = cfg or {}
+    if _special(day, cfg):
+        return None
+    after = _hhmm(cfg.get("no_entries_after", ENTRY_WINDOW[1]), "no_entries_after")
+    return ist_to_utc(_dt.datetime.combine(day, after)) if after is not None else None
 
 
 # ---------------------------------------------------------------- files
@@ -473,8 +537,9 @@ def hhmm(dt_utc):
     return to_ist(dt_utc).strftime("%H:%M")
 
 
-def simulate(group, bars, approved, flat_dt, cfg_charges=None):
-    """Play the group on the day's bars. approved and flat_dt are aware UTC.
+def simulate(group, bars, approved, flat_dt, cfg_charges=None, last_entry=None):
+    """Play the group on the day's bars. approved, flat_dt and last_entry (the start of the last bar
+    an entry may fill in, or None) are aware UTC.
     Returns {"entry": fill or None, "exit": fill or None, "open": bool, "notes": [...]}."""
     legs = legs_of(group)
     en = legs.get("entry")
@@ -490,6 +555,8 @@ def simulate(group, bars, approved, flat_dt, cfg_charges=None):
     covers = any(b["t"] + step >= flat_dt for b in bars)
     i0 = None
     for i, b in enumerate(tradeable):
+        if last_entry is not None and b["t"] > last_entry:
+            break
         if limit is None:
             out["entry"] = {"price": b["o"], "t": b["t"], "how": "open of the %s bar" % hhmm(b["t"])}
         elif b["o"] <= limit:
@@ -502,7 +569,10 @@ def simulate(group, bars, approved, flat_dt, cfg_charges=None):
             i0 = i
             break
     if out["entry"] is None:
-        if covers:
+        if last_entry is not None and any(b["t"] > last_entry for b in bars):
+            out["notes"].append("the entry window closed at %s IST before the entry filled: nothing was traded"
+                                % hhmm(last_entry))
+        elif covers:
             out["notes"].append("the entry never filled before flat_by: nothing was traded")
         else:
             out["open"] = True
@@ -567,7 +637,10 @@ def _approval_time(a, state, fp):
             found = r
     if not found:
         raise PaperError("no yes is recorded for this group: run ticket.py approve with the user's yes first "
-                         "(or pass --approved-at to replay a past approval)")
+                         "(or pass --approved-at to replay a past session, which is never counted)")
+    if str(found.get("broker") or "paper").lower() != "paper":
+        raise PaperError("the yes for this group was recorded for %s, not paper: the paper engine does not play it"
+                         % found.get("broker"))
     t = str(found.get("at", "")).replace("Z", "+00:00")
     try:
         dt = _dt.datetime.fromisoformat(t)
@@ -591,9 +664,18 @@ def cmd_run(a):
         raise PaperError("no group %s in %s" % (a.group, a.orders))
     group = match[0]
     cfg = read_json(a.config, "config", required=False) or {}
-    state = load_state(a.state)
+    mode = broker_mode(cfg)
+    replay = bool(a.approved_at)
+    if not replay and mode == "kite":
+        raise PaperError("the config says \"broker\": \"kite\" (a live account): the paper engine only plays paper "
+                         "groups. Use --approved-at for a replay that is never counted")
+    out_path = (a.replay_state or os.path.join(os.path.dirname(a.state) or ".", REPLAY_FILE)) if replay else a.state
+    if replay:
+        print("REPLAY (--approved-at): a what-if on past bars, written to %s only. Not a trade, not counted by "
+              "nse-risk, and nothing goes to broker.json." % out_path)
+    state = load_state(out_path)
     fp = fingerprint(group)
-    approved = _approval_time(a, state, fp)
+    approved = _approval_time(a, state if replay else load_state(a.state), fp)
     local = to_ist(approved)
     day = local.date()
     ok, why = trading_day(day, cfg)
@@ -614,24 +696,32 @@ def cmd_run(a):
     if approved > flat_dt - _dt.timedelta(minutes=BAR):
         raise PaperError("approved at %s IST, after the last bar before flat_by %s: no new paper entry"
                          % (local.strftime("%H:%M"), fb))
+    had_entry = [r for r in mine if r.get("status") == "filled" and r.get("leg") == "entry"]
+    shut = None if had_entry else entry_window(approved, cfg)
+    if shut:
+        raise PaperError("approved at %s IST: %s. No new paper entry (exits are not held to this)"
+                         % (local.strftime("%H:%M"), shut))
     legs = legs_of(group)
     sym = str(legs.get("entry", {}).get("tradingsymbol") or "").strip().upper()
     bars = get_bars(sym, day, a.offline)
-    res = simulate(group, bars, approved, flat_dt, cfg.get("charges"))
+    res = simulate(group, bars, approved, flat_dt, cfg.get("charges"), entry_until(day, cfg))
     qty = res["qty"]
     src = ("offline file in %s" % a.offline) if a.offline else "Yahoo"
-    print("PAPER: %s, %d %s, approved %s IST, 5-minute bars of %s (%s)"
-          % (a.group, qty, sym, local.strftime("%H:%M"), ds, src))
+    print("%s: %s, %d %s, approved %s IST, 5-minute bars of %s (%s)"
+          % ("REPLAY" if replay else "PAPER", a.group, qty, sym, local.strftime("%H:%M"), ds, src))
     ent = res["entry"]
-    had_entry = [r for r in mine if r.get("status") == "filled" and r.get("leg") == "entry"]
     if ent is not None:
         print("  entry       BUY %d %s at %s, %s" % (qty, sym, inr(ent["price"]), ent["how"]))
         if not had_entry:
-            ml = _f(plan.get("max_loss"))
-            if ml is None and res["stop"] is not None:
-                ml = float(((ent["price"] - res["stop"]) * qty).quantize(Decimal("0.01")))
+            if res["stop"] is not None:   # measured from the actual fill, charges included
+                ml = float((qty * (ent["price"] - res["stop"]) + round_trip(qty, ent["price"], res["stop"],
+                                                                            cfg.get("charges"))).quantize(Decimal("0.01")))
+            else:
+                ml = _f(plan.get("max_loss"))
             base = {"date": ds, "group": a.group, "fingerprint": fp, "symbol": sym, "qty": qty,
                     "broker": "paper", "paper": True}
+            if replay:
+                base["replay"] = True
             state["orders"].append(dict(base, at=to_ist(ent["t"]).isoformat(), status="placed", side="BUY",
                                         kind="entry", max_loss=ml, legs=len(role_legs(group)),
                                         stop=_f(res["stop"]), target=_f(res["target"]), flat_by=fb,
@@ -649,13 +739,13 @@ def cmd_run(a):
                                 "fingerprint": fp, "leg": ex["leg"], "symbol": sym, "side": "SELL", "qty": qty,
                                 "price": float(ex["price"]), "time": ex["time"], "gross_pnl": float(ex["gross"]),
                                 "charges": float(ex["charges"]), "net_pnl": float(ex["net"]), "note": ex["how"],
-                                "broker": "paper", "paper": True,
+                                "broker": "paper", "paper": True, "replay": replay,
                                 "plain": "paper: SELL %d %s at %s (%s)" % (qty, sym, inr(ex["price"]), ex["leg"])})
     for n in res["notes"]:
         print("  note: " + n)
     if res["open"] and ent is not None:
         print("  The paper position is still open: run this command again later today to finish it.")
-    write_json(a.state, state)
+    write_json(out_path, state)
     print("Recorded in %s. A paper fill is a model on past bars: real fills can be worse (slippage, partial "
           "fills, a locked circuit). Not financial advice." % a.state)
     return 0
@@ -703,8 +793,10 @@ def main(argv=None):
     p.add_argument("--config", default="nse/config.json")
     p.add_argument("--state", default="nse/state/broker.json")
     p.add_argument("--offline", metavar="DIR", help="saved Yahoo chart JSON (DIR/<SYMBOL>.json or one file)")
-    p.add_argument("--approved-at", help="IST time of the yes, e.g. \"2026-10-27 09:35\" (default: the recorded yes)")
-    p = sub.add_parser("status", help="open paper positions")
+    p.add_argument("--approved-at", help="REPLAY as if the yes came at this IST time, e.g. \"2026-10-27 09:35\"; "
+                   "writes only the replay file, never broker.json (default: play the recorded yes)")
+    p.add_argument("--replay-state", help="the replay file (default: paper-replay.json next to --state)")
+    p = sub.add_parser("status", help="open paper positions (--state nse/state/paper-replay.json for replays)")
     p.add_argument("--state", default="nse/state/broker.json")
     a = ap.parse_args(argv)
     if not a.cmd:

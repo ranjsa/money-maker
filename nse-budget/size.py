@@ -237,7 +237,6 @@ def yahoo_quote(sym):
 # --- nse charges: begin ---
 # Intraday equity charges (Zerodha-style). Shared by the charge-aware tools and kept identical by
 # tests/sync_common.py. Edit it in nse-exit/exit.py only. Override key by key under "charges" in config.
-import decimal as _decimal
 
 # rates checked against zerodha.com/charges on 2026-10-28
 CHARGES_DEFAULT = {
@@ -356,13 +355,28 @@ def read_json(path, what):
         raise SizeError("%s is not valid JSON: %s" % (path, e))
 
 
+def broker_mode(cfg):
+    """"paper" or "kite" from the config as written. LIVE is "broker": "kite"; "paper" must agree."""
+    cfg = cfg or {}
+    b = str(cfg.get("broker") or "paper").strip().lower()
+    if b not in ("paper", "kite"):
+        raise SizeError("config \"broker\" must be \"paper\" or \"kite\", not %r" % cfg.get("broker"))
+    if cfg.get("paper") is not None and bool(cfg.get("paper")) != (b == "paper"):
+        raise SizeError("config error: \"broker\" is \"%s\" but \"paper\" is %s. Set both: \"broker\": \"kite\" "
+                        "with \"paper\": false for a live account, or \"broker\": \"paper\" with \"paper\": true"
+                        % (b, "true" if cfg.get("paper") else "false"))
+    return b
+
+
 def load_config(path):
     cfg = dict(DEFAULTS)
     if path and os.path.exists(path):
         doc = read_json(path, "config")
         if not isinstance(doc, dict):
             raise SizeError("%s is not valid JSON: expected an object" % path)
+        broker = broker_mode(doc)
         cfg.update(doc)
+        cfg["broker"], cfg["paper"] = broker, broker == "paper"
     return cfg
 
 
@@ -673,7 +687,7 @@ def write_orders(path, orders, cfg, source="", now=None):
         "created_by": "nse-budget",
         "created_at": utc_iso(now),
         "status": "proposed",
-        "paper": bool(cfg.get("paper", True)),
+        "paper": broker_mode(cfg) == "paper",
         "note": ("Proposals only. Nothing is placed until nse-risk passes each order "
                  "and you say yes to it in the chat."),
         "source": source,

@@ -452,8 +452,31 @@ class LossAndLimits(unittest.TestCase):
         self.assertIn("daily limit: 8 orders placed today", reasons(run(demo(), state=st)))
 
     def test_live_account_warns(self):
-        res = run(demo(), cfg(paper=False))
+        # I5: LIVE is "broker": "kite" (with "paper": false to match)
+        res = run(demo(), cfg(broker="kite", paper=False))
         self.assertIn("LIVE", res["warnings"][0])
+        self.assertIs(res["paper"], False)
+        res = run(demo(), {"budget": 100000, "broker": "kite"})
+        self.assertIn("LIVE", res["warnings"][0])
+        self.assertIs(res["paper"], False)
+
+    def test_broker_and_paper_that_disagree_are_a_config_error(self):
+        for over in ({"broker": "kite", "paper": True}, {"broker": "paper", "paper": False}, {"paper": False}):
+            with self.assertRaises(check.RiskError) as cm:
+                run(demo(), cfg(**over) if "broker" in over else dict(cfg(), **over))
+            self.assertIn('"broker"', str(cm.exception))
+            self.assertIn('"paper"', str(cm.exception))
+            with tempfile.TemporaryDirectory() as d:
+                cp = os.path.join(d, "config.json")
+                with open(cp, "w") as fh:
+                    json.dump(dict(cfg(), **over), fh)
+                err = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                    code = check.main(["--orders", DEMO_PATH, "--config", cp, "--now", NOW, "--no-write",
+                                       "--state", os.path.join(d, "none"), "--bands", SEC_LIST])
+                self.assertEqual(code, 1, over)
+                self.assertIn('"broker"', err.getvalue())
+                self.assertIn('"paper"', err.getvalue())
 
 
 class Exits(unittest.TestCase):
@@ -504,6 +527,30 @@ class Exits(unittest.TestCase):
         res = run([demo(), self.sell()])
         self.assertEqual(verdicts(res), ["PASS", "PASS"], reasons(res, 1))
         self.assertEqual(res["results"][1]["kind"], "exit")
+
+
+class Verdicts(unittest.TestCase):
+    def test_write_verdicts_records_the_run_time_at_the_top_and_on_its_verdicts(self):
+        # I1: nse-broker trusts a verdict only when its checked_at is the latest run's checked_at
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "risk.json")
+            a, b = demo(), rename(demo(), "BBB")
+            check.write_verdicts(out, run(a), "orders.json")
+            with open(out) as fh:
+                first = json.load(fh)
+            fa = check.fingerprint(a)
+            self.assertEqual(first["checked_at"], first["verdicts"][fa]["checked_at"])
+            for v in first["verdicts"].values():
+                v["checked_at"] = "2026-10-27T04:00:00Z"
+            first["checked_at"] = "2026-10-27T04:00:00Z"
+            with open(out, "w") as fh:
+                json.dump(first, fh)
+            check.write_verdicts(out, run(b), "orders.json")
+            with open(out) as fh:
+                doc = json.load(fh)
+            self.assertEqual(doc["verdicts"][check.fingerprint(b)]["checked_at"], doc["checked_at"])
+            self.assertEqual(doc["verdicts"][fa]["checked_at"], "2026-10-27T04:00:00Z")
+            self.assertNotEqual(doc["checked_at"], "2026-10-27T04:00:00Z")
 
 
 class Cli(unittest.TestCase):

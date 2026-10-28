@@ -14,6 +14,15 @@ m = load("nse-exit", "exit")
 utc = timezone.utc
 
 
+class ChargesBlock(unittest.TestCase):
+    def test_the_charges_block_has_no_unused_import(self):
+        # M5: "import decimal as _decimal" was never used
+        with open(os.path.join(ROOT, "nse-exit", "exit.py"), encoding="utf-8") as fh:
+            text = fh.read()
+        block = text[text.index("# --- nse charges: begin ---"):text.index("# --- nse charges: end ---")]
+        self.assertNotIn("_decimal", block)
+
+
 class Clock(unittest.TestCase):
     def test_to_ist(self):
         self.assertEqual(m.to_ist(dt(2026, 10, 27, 3, 45, tzinfo=utc)).strftime("%H:%M"), "09:15")

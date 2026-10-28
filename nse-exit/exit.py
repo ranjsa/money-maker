@@ -260,7 +260,6 @@ def yahoo_quote(sym):
 # --- nse charges: begin ---
 # Intraday equity charges (Zerodha-style). Shared by the charge-aware tools and kept identical by
 # tests/sync_common.py. Edit it in nse-exit/exit.py only. Override key by key under "charges" in config.
-import decimal as _decimal
 
 # rates checked against zerodha.com/charges on 2026-10-28
 CHARGES_DEFAULT = {

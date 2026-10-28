@@ -183,6 +183,8 @@ above in a fresh folder and reproduces every number in the example. It
 replays the paper fills with `paper.py run --approved-at`, because a risk
 check run on a pinned clock is never READY against the real one: the broker
 shows the three legs, marks them RECHECK and refuses the yes, as it should.
+A replay writes `nse/state/paper-replay.json` only, never `broker.json`, so
+it is never counted as a trade.
 
 ## Fine print
 
@@ -221,7 +223,9 @@ place, modify or cancel order tools, so it can read quotes, orders and
 positions but cannot trade. Live orders need the self-hosted
 [zerodha/kite-mcp-server](https://github.com/zerodha/kite-mcp-server), built
 yourself with your own Kite Connect API key and secret. Keys live in the
-Claude Desktop config or environment variables, never in the chat.
+Claude Desktop config or environment variables, never in the chat. To go
+live, set both `"broker": "kite"` and `"paper": false`; the tools refuse a
+config where the two disagree.
 
 **MIS is squared off for you.** Intraday (MIS) positions still open near the
 close are auto squared off by the broker, around 15:20 IST at Zerodha
