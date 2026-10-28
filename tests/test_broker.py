@@ -13,7 +13,7 @@ check = load("nse-risk", "check")
 
 CFG_PATH = os.path.join(ROOT, "nse-budget", "config.example.json")
 ORDERS_PATH = os.path.join(FIX, "nse-risk", "orders-tsla.json")
-PLAN_PATH = os.path.join(FIX, "nse-budget", "plan-tsla.json")
+PLAN_PATH = os.path.join(FIX, "nse-budget", "plan-demo.json")
 NOW = "2026-10-19 10:15"
 TODAY = "2026-10-19"
 AAPL = {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market", "time_in_force": "day"}

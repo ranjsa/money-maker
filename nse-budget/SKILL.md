@@ -1,67 +1,71 @@
 ---
 name: nse-budget
 description: >-
-  Budget Manager. Sizes every position to your budget and your max loss per
-  trade. Reads the trade plan from trader-exit (entry, stop, target), finds
-  the whole shares that fit inside four limits (max loss per trade, position
-  cap, max order, cash after your buffer), says which limit decided it, and
-  writes ONE bracket order (entry, stop-loss, take-profit) to
-  trader/orders.json in the exact shape of Alpaca's place_stock_order. A stop
-  too far away for your max loss is a plain refusal, not a smaller order.
-  Nothing is placed. Use when the user says "how many shares", "size this
-  trade", "how much should I buy", "I have $5,000", "I only want to risk $50
-  a trade", "set my rules", "keep 10% in cash", or after /trader-exit writes
-  a plan.
-argument-hint: "[budget in dollars]"
+  Budget Manager for NSE. Sizes every intraday position to your budget and
+  your max loss per trade, with brokerage, STT, GST and the other charges
+  counted inside the loss at the stop. Reads the trade plan from nse-exit
+  (entry, stop, target), finds the whole shares that fit inside four limits
+  (max loss per trade, position cap, max order, cash after your buffer), says
+  which limit decided it, and writes ONE three-leg MIS order (entry, SL-M
+  stop, LIMIT target) to nse/orders.json in Kite Connect place_order field
+  names. A stop too far away for your max loss is a plain refusal, not a
+  smaller order. Nothing is placed. Use when the user says "how many shares",
+  "size this trade", "how much should I buy", "I have 1 lakh", "I only want
+  to risk 1000 a trade", "set my rules", "keep 10% in cash", or after
+  /nse-exit writes a plan.
+argument-hint: "[budget in rupees]"
 ---
 
-# trader-budget
+# nse-budget
 
-The Budget Manager turns a plan ("buy TSLA at 364.18, stop 358.32") into an
-exact order ("buy 8 shares"), inside rules the user sets once. The stop
-decides the size: the further away the stop, the fewer shares. It writes a
-proposal only. trader-risk checks it and trader-broker asks the user yes or
-no. Day trading loses most people money. Sizing to a max loss keeps each
-loss small; it does not make a trade win.
+The Budget Manager turns a plan ("buy DEMO at ₹1,015.00, stop ₹1,005.20")
+into an exact order ("buy 73 shares"), inside rules the user sets once. The
+stop decides the size: the further away the stop, the fewer shares. It writes
+a proposal only. nse-risk checks it and nse-broker asks the user yes or no.
+Intraday trading loses most people money (SEBI's studies say so, see the
+README). Sizing to a max loss keeps each loss small; it does not make a
+trade win. Not financial advice.
 
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/size.py"                        # trader/plan.json + trader/config.json
-python3 "${CLAUDE_SKILL_DIR}/size.py" --write                # write trader/orders.json
-python3 "${CLAUDE_SKILL_DIR}/size.py" --limit --write        # a limit order at the plan's entry
-python3 "${CLAUDE_SKILL_DIR}/size.py" --limit 364.00 --json  # a limit order at 364.00
-python3 "${CLAUDE_SKILL_DIR}/size.py" --weights AAPL=40,KO=60 --config split.json   # weights mode, below
+python3 "${CLAUDE_SKILL_DIR}/size.py"                         # nse/plan.json + nse/config.json
+python3 "${CLAUDE_SKILL_DIR}/size.py" --write                 # write nse/orders.json
+python3 "${CLAUDE_SKILL_DIR}/size.py" --limit --write         # a LIMIT entry at the plan's entry
+python3 "${CLAUDE_SKILL_DIR}/size.py" --limit 1014.50 --json  # a LIMIT entry at ₹1,014.50
 ```
 
-`--now "2026-10-19 10:15"` pins the clock (New York time). A plan for
-another day is refused: make a new one with trader-exit.
+`--now "2026-10-27 10:15"` pins the clock (IST). A plan for another day is
+refused: make a new one with nse-exit.
 
 ## What it reads and writes
 
 | file | what |
 | --- | --- |
-| `trader/config.json` | the rules (start from `config.example.json` in this folder) |
-| `trader/plan.json` | the trade: entry, stop, target, setup, flat-by time (trader-exit writes it) |
-| `trader/prices.json` | optional: a fresh price above the plan's entry means a bigger risk (trader-alerts writes it) |
-| `trader/portfolio.json` | optional: its cash caps the size (trader-broker keeps it) |
-| `trader/orders.json` | the one proposed bracket order it writes with `--write` |
+| `nse/config.json` | the rules (start from `config.example.json` in this folder) |
+| `nse/plan.json` | the trade: entry, stop, target, setup, flat-by time (nse-exit writes it) |
+| `nse/prices.json` | optional: a fresh price above the plan's entry means a bigger risk (nse-alerts writes it) |
+| `nse/portfolio.json` | optional: its cash caps the size (nse-broker keeps it) |
+| `nse/orders.json` | the one proposed order it writes with `--write` |
 
 ## Step 1: set the rules once
 
-If `trader/config.json` does not exist, copy `config.example.json` into
-`trader/config.json` and ask the user for each value in plain words:
+If `nse/config.json` does not exist, copy `config.example.json` into
+`nse/config.json` and ask the user for each value in plain words:
 
-- **budget**: how much money this is for. Only money they can afford to lose.
+- **budget**: how much money this is for (default ₹1,00,000). Only money they can afford to lose.
 - **cash_buffer_pct**: how much always stays in cash (default 10).
-- **max_loss_per_trade_usd**: the most one trade may lose if the stop fills at the stop (default 50).
-- **max_position_pct**, **max_order_usd**, **min_order_usd**: the biggest position (75% of the
-  budget), the biggest order ($4,000) and the smallest order ($5).
-- The day limits trader-risk enforces: **max_daily_loss_usd** (150), **max_trades_per_day** (3),
+- **max_loss_per_trade_inr**: the most one trade may lose if the stop fills at the stop,
+  charges included (default ₹1,000).
+- **max_position_pct**, **max_order_inr**, **min_order_inr**: the biggest position (75% of the
+  budget), the biggest order (₹80,000) and the smallest order (₹500).
+- The day limits nse-risk enforces: **max_daily_loss_inr** (₹3,000), **max_trades_per_day** (3),
   **min_reward_risk** (1.0), **require_stop** (true), **no_entries_before** / **no_entries_after**
-  ("09:45" / "15:30") and **flat_by** ("15:55"), all New York time.
-- **blocked**: tickers they never want to trade.
-- Keep **paper** true until they have watched it work on a paper account.
+  ("09:30" / "14:45") and **flat_by** ("15:10"), all IST.
+- **product** "MIS" and **exchange** "NSE": intraday cash equity, EQ series only.
+- **charges**: optional overrides for the fee schedule (brokerage, STT, GST...). Empty uses the defaults.
+- **blocked**: symbols they never want to trade.
+- Keep **paper** true (and **broker** "paper") until they have watched it work.
 
 ## Step 2: size the trade
 
@@ -69,76 +73,86 @@ If `trader/config.json` does not exist, copy `config.example.json` into
 python3 "${CLAUDE_SKILL_DIR}/size.py" --write
 ```
 
-Whole shares only: Alpaca takes no fractions in a bracket order. The size is
-the smallest of four limits:
+Whole shares only, never fractional. The size is the smallest of four limits:
 
 | limit | shares |
 | --- | --- |
-| max loss | `max_loss_per_trade_usd` / risk a share (entry minus stop) |
+| max loss | the most shares where shares x risk + round-trip charges at the stop stays within `max_loss_per_trade_inr` |
 | position cap | budget x `max_position_pct` / entry |
-| max order | `max_order_usd` / entry |
-| cash | (budget minus the cash buffer) / entry, never more than the cash in `trader/portfolio.json` |
+| max order | `max_order_inr` / entry |
+| cash | (budget minus the cash buffer) / entry, never more than the cash in `nse/portfolio.json` |
 
-The entry it sizes at: the limit price with `--limit`. For a market order, the
-plan's entry, or the price in `trader/prices.json` if it is fresh (under 15
+Charges matter on a tight stop: brokerage, STT on the sell side, exchange and
+SEBI fees, stamp duty and 18% GST are added to the loss at the stop, so the
+loss you cap is the loss you would really take. The script starts at
+`floor(max loss / risk)` and takes shares off until the net loss fits.
+
+The entry it sizes at: the limit price with `--limit`. For a market entry, the
+plan's entry, or the price in `nse/prices.json` if it is fresh (under 15
 minutes old) and higher. A price that ran up since the plan means a bigger
 loss at the same stop, so fewer shares. A lower price never shrinks the risk.
 
-It refuses, and writes no order, when: the size is zero shares, the order is
-under the minimum, reward:risk is under `min_reward_risk`, the stop is not
-below the entry, the target is not above it (the move already happened), the
-plan is for another day, the ticker is blocked, or the plan is a short. Say
-the reason to the user in one line.
+It refuses, and writes no order, when: the size is zero shares (the refusal
+reads "a stop ₹X away needs max loss ≥ ₹Y"), the order is under the minimum,
+reward:risk is under `min_reward_risk`, the stop is not below the entry, the
+target is not above it (the move already happened), the plan is for another
+day, the symbol is blocked, or the plan is a short. Say the reason to the
+user in one line. Never offer a smaller order or a wider limit to make it fit.
 
-## Step 3: show the user
+## Step 3: the three-leg order
 
-Show the four limits, which one decided the size, the shares, the dollars
-and the max loss at the stop. Say plainly that a stop is an order, not a
-promise: in a fast market it can fill below the stop. Then hand over to
-`/trader-risk`.
+Kite has no bracket orders for retail accounts, so the proposal is three
+separate Kite Connect `place_order` legs sharing one `group` and one quantity:
 
-## Example: the reel
+| role | transaction_type | order_type | price field |
+| --- | --- | --- | --- |
+| entry | BUY | MARKET (or LIMIT with `--limit`, plus `price`) | none / `price` |
+| stop | SELL | SL-M | `trigger_price` |
+| target | SELL | LIMIT | `price` |
 
-TSLA on Monday 2026-10-19. Opening-range breakout: entry 364.18 at 10:15 AM,
-stop 358.32 (the opening-range midpoint), target 370.04 (1R). Risk 5.86 a
-share. The example config: $5,000 budget, 10% cash buffer, $50 max loss.
+All legs are `product` MIS, `variety` regular, `validity` DAY. The stop and
+target are exits for the same shares: when one fills, the other must be
+cancelled, or it could open an unwanted short. nse-broker prints that cancel
+ticket and nse-alerts rings if both legs are still open after a fill. The
+`group` is `SYMBOL-DATE-n`, and `n` counts the groups already in the file.
+
+## Step 4: show the user
+
+Show the four limits, which one decided the size, the shares, the rupees and
+the max loss at the stop with the charges shown separately. Say plainly that
+a stop is an order, not a promise: in a fast market it can fill below the
+stop. Then hand over to `/nse-risk`.
+
+## Example
+
+DEMO on Tuesday 2026-10-27. Opening-range breakout: entry ₹1,015.00 at
+09:35 AM, stop ₹1,005.20 (the opening-range midpoint), target ₹1,034.60 (2R).
+Risk ₹9.80 a share. The example config: ₹1,00,000 budget, 10% buffer, ₹1,000
+max loss.
 
 | limit | the math | shares |
 | --- | --- | --- |
-| max loss | $50 / 5.86 | **8 (decides it)** |
-| position cap | 75% of $5,000 = $3,750 / 364.18 | 10 |
-| max order | $4,000 / 364.18 | 10 |
-| cash | $5,000 minus $500 = $4,500 / 364.18 | 12 |
+| max loss | ₹1,000 less charges, ₹9.80 a share | 93 |
+| position cap | 75% of ₹1,00,000 = ₹75,000 / ₹1,015.00 | **73 (decides it)** |
+| max order | ₹80,000 / ₹1,015.00 | 78 |
+| cash | ₹1,00,000 minus ₹10,000 = ₹90,000 / ₹1,015.00 | 88 |
 
-8 shares = $2,913.44. Max loss at the stop: 8 x 5.86 = $46.88. It writes:
+73 shares = ₹74,095.00. Max loss at the stop: 73 x ₹9.80 = ₹715.40 plus
+₹73.26 charges = ₹788.66. It writes (entry leg shown in full):
 
 ```json
-{"symbol": "TSLA", "side": "buy", "qty": "8", "type": "market", "time_in_force": "day",
- "order_class": "bracket", "take_profit_limit_price": "370.04", "stop_loss_stop_price": "358.32",
- "why": "opening-range breakout on TSLA: 8 shares, bound by your $50 max loss per trade (8 x 5.86 = $46.88 at the stop)",
- "plan": {"entry": 364.18, "stop": 358.32, "target": 370.04, "risk_per_share": 5.86, "max_loss": 46.88,
-          "setup": "orb", "entry_time": "10:15 AM", "flat_by": "15:55"}}
+{"group": "DEMO-2026-10-27-1",
+ "legs": [{"role": "entry", "exchange": "NSE", "tradingsymbol": "DEMO", "transaction_type": "BUY",
+           "quantity": 73, "product": "MIS", "order_type": "MARKET", "variety": "regular", "validity": "DAY"},
+          {"role": "stop", "...": "SELL 73, SL-M, trigger_price 1005.2"},
+          {"role": "target", "...": "SELL 73, LIMIT, price 1034.6"}],
+ "why": "...", "plan": {"entry": 1015.0, "stop": 1005.2, "target": 1034.6, "charges": 73.26, "max_loss": 788.66}}
 ```
 
-`why` and `plan` are notes for trader-risk and trader-broker. They are never
-sent to Alpaca. With the stop at 300.00 instead, one share would risk 64.18,
-more than the $50 max loss: no order. At 10:52 the real quote was 366.48, so
-the same plan sizes to 6 shares at 8.16 a share, and reward:risk falls to
-0.44: refused, because the move it was waiting for has mostly happened.
-
-## Weights mode (kept from v1)
-
-`--weights AAPL=22.04,KO=10.86` or `--targets FILE` (`targets.example.json`
-here) splits a budget across a list by weight: the cash buffer comes off the
-top, weights are renormalised to 100, any stock over `max_position_pct` is
-pinned at the cap and its excess shared out, slices under the minimum order
-are dropped, and amounts round to whole dollars so nothing is left idle by
-accident. With `"max_position_pct": 25` and `"fractional": true`, the example
-file gives AAPL $1,250 (capped), AXP $1,119, GOOGL $823, KO $708, BAC $600.
-With `"fractional": false` (the example config) it buys whole shares and
-needs prices (`--prices trader/prices.json`). These are plain buys with no stop: trader-risk blocks them while
-`require_stop` is true and counts each one against `max_trades_per_day`. Use
-a separate config (`--config`) for a long-term split.
+`why` and `plan` are notes for nse-risk and nse-broker. They are never sent
+to the broker. With a stop ₹1,200 away instead, no order is written. If the
+cap is lifted to 100% with no buffer, the max loss limit decides and the size
+is the 93 shares above.
 
 ## Rules
 
@@ -151,16 +165,15 @@ a separate config (`--config`) for a long-term split.
 ## What it never does
 
 It never places, approves or schedules an order, never raises a limit on its
-own, never shrinks a stop to fit more shares, and never sizes options,
-margin or short positions.
+own, never shrinks a stop to fit more shares, and never sizes F&O, leverage
+or short positions.
 
 ## Safety
 
-- Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
+- Education and tooling. Not financial advice. A PASS is a rules check, not a recommendation.
 - Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
-- Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
-  user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
-  (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
-- No options, margin, short selling or leverage unless the config allows it and the user confirms.
-- Broker keys live in environment variables or the Claude Desktop config, never in the chat.
+- Nothing in this pack places an order except nse-broker, and only when nse-risk passed that exact
+  order today and the user typed an explicit yes for that one order in the chat. Without a typed yes,
+  nothing is placed.
+- No F&O, leverage or short selling unless the config allows it and the user confirms.
+- Broker keys live in environment variables, never in the chat.

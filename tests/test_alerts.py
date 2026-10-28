@@ -14,7 +14,7 @@ from _load import load, ROOT, FIX
 alerts = load("nse-alerts", "alerts")
 
 QDIR = os.path.join(FIX, "nse-alerts")
-PLAN = os.path.join(FIX, "nse-budget", "plan-tsla.json")
+PLAN = os.path.join(FIX, "nse-budget", "plan-demo.json")
 DT = datetime.datetime
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 

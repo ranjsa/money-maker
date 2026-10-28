@@ -137,18 +137,30 @@ class Repo(unittest.TestCase):
     def test_day_trading_limits_ship_in_the_example_config(self):
         with open(os.path.join(ROOT, "nse-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
-        for k in ("max_loss_per_trade_usd", "max_daily_loss_usd", "max_trades_per_day",
-                  "min_reward_risk", "require_stop", "no_entries_after", "flat_by"):
+        for k in ("max_loss_per_trade_inr", "max_daily_loss_inr", "max_order_inr", "min_order_inr",
+                  "max_trades_per_day", "max_orders_per_day", "min_reward_risk", "require_stop",
+                  "no_entries_before", "no_entries_after", "flat_by", "product", "exchange", "special_sessions",
+                  "charges"):
             self.assertIn(k, cfg, k)
+        self.assertFalse([k for k in cfg if k.endswith("_usd")])
+        self.assertNotIn("pdt_guard", cfg)
+        self.assertNotIn("sec_user_agent", cfg)
+        self.assertEqual((cfg["product"], cfg["exchange"], cfg["flat_by"]), ("MIS", "NSE", "15:10"))
+        self.assertEqual((cfg["no_entries_before"], cfg["no_entries_after"]), ("09:30", "14:45"))
+        self.assertEqual((cfg["budget"], cfg["max_loss_per_trade_inr"], cfg["max_daily_loss_inr"]),
+                         (100000, 1000, 3000))
+        self.assertEqual((cfg["max_order_inr"], cfg["min_order_inr"]), (80000, 500))
         self.assertIs(cfg["require_stop"], True)
-        self.assertIs(cfg.get("allow_short", False), False)
-        self.assertIs(cfg.get("allow_margin", False), False)
+        for k in ("allow_leverage", "allow_short", "allow_fno"):
+            self.assertIs(cfg[k], False, k)
+        self.assertEqual(cfg["special_sessions"], {})
+        self.assertEqual(cfg["charges"], {})
 
     def test_paper_trading_is_the_default(self):
         with open(os.path.join(ROOT, "nse-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
         self.assertIs(cfg["paper"], True)
-        self.assertIs(cfg.get("allow_options", False), False)
+        self.assertEqual(cfg["broker"], "paper")
 
 
 if __name__ == "__main__":
