@@ -486,7 +486,8 @@ def parse_sec_list(text):
 
 
 def load_bands(path):
-    """nse/state/bands.json (or a sec_list.csv) -> (bands, as_of) or (None, None) if there is none."""
+    """nse/state/bands.json (or a sec_list.csv) -> (bands, as_of) or (None, None) if there is none.
+    as_of is None when the file's as_of is missing or not YYYY-MM-DD: check() treats that as stale."""
     if not path or not os.path.exists(path):
         return None, None
     if path.lower().endswith(".csv"):
@@ -497,7 +498,17 @@ def load_bands(path):
     doc = read_json(path, "price bands")
     if not isinstance(doc, dict) or not isinstance(doc.get("bands"), dict):
         raise RiskError("%s has no \"bands\" object: run check.py --refresh-bands" % path)
-    return doc["bands"], doc.get("as_of")
+    return doc["bands"], valid_day(doc.get("as_of"))
+
+
+def valid_day(text):
+    """"YYYY-MM-DD" if text is a real ISO date, else None (a missing or malformed as_of counts as stale)."""
+    if not isinstance(text, str) or not re.match(r"^\d{4}-\d{2}-\d{2}$", text.strip()):
+        return None
+    try:
+        return datetime.date.fromisoformat(text.strip()).isoformat()
+    except ValueError:
+        return None
 
 
 def fetch_sec_list(offline=None):
@@ -744,7 +755,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     price_times  {SYM: UTC time of that price}; None = every price counts as fresh
     bands        {SYM: {"series", "band"}} from sec_list.csv (parse_sec_list); None = not loaded
     prev_close   {SYM: previous close} from today (load_prices drops an older one)
-    bands_as_of  IST date (YYYY-MM-DD) of the bands; before today blocks entries (None = treated as current)
+    bands_as_of  IST date (YYYY-MM-DD) of the bands; missing, malformed or before today blocks entries
     universe     EQ symbols from nse/universe.json; None = not loaded"""
     c = dict(DEFAULTS)
     c.update(cfg or {})
@@ -961,7 +972,10 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             elif bands is None:
                 later.append("circuit: NSE price bands are not loaded, so the upper-circuit check cannot run: "
                              "run check.py --refresh-bands")
-            elif bands_as_of and bands_as_of < today:
+            elif valid_day(bands_as_of) is None:
+                later.append("circuit: the NSE price bands have no valid as_of date (got %r), so they count as "
+                             "stale: run check.py --refresh-bands" % (bands_as_of,))
+            elif valid_day(bands_as_of) < today:
                 later.append("circuit: the NSE price bands are from %s, before today (%s): run check.py "
                              "--refresh-bands" % (bands_as_of, today))
             elif b is None:
@@ -1266,7 +1280,8 @@ def main(argv=None):
             bands, bands_as_of = refresh_bands(a.bands, today, a.offline), today
         else:
             bands, bands_as_of = load_bands(a.bands)
-            if (bands is None or (bands_as_of and bands_as_of < today)) and not a.offline and has_entry(orders):
+            if ((bands is None or bands_as_of is None or bands_as_of < today) and not a.offline
+                    and has_entry(orders)):
                 try:   # one live try; without it the entries are blocked (circuit)
                     bands, bands_as_of = refresh_bands(a.bands, today), today
                     refresh_note = "price bands refreshed from %s" % SEC_LIST_URL
@@ -1280,7 +1295,10 @@ def main(argv=None):
         if bands is None:
             res["warnings"].append("price bands not loaded (no %s): run check.py --refresh-bands for the series "
                                    "and circuit checks" % a.bands)
-        elif bands_as_of and bands_as_of != today:
+        elif bands_as_of is None:
+            res["warnings"].append("price bands in %s have no valid as_of date (missing or not YYYY-MM-DD): treated "
+                                   "as stale, run check.py --refresh-bands" % a.bands)
+        elif bands_as_of != today:
             res["warnings"].append("price bands are from %s: refresh them daily (check.py --refresh-bands)"
                                    % bands_as_of)
         if pdoc.get("as_of"):

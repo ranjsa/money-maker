@@ -57,6 +57,7 @@ def rename(o, sym):
 def run(orders, c=None, now=NOW, bands=BANDS, prev_close=PREV, **kw):
     if isinstance(orders, dict):
         orders = [orders]
+    kw.setdefault("bands_as_of", at(now).astimezone(check.IST).date().isoformat())   # fresh unless a test says not
     return check.check(orders, c if c is not None else cfg(), now=at(now), bands=bands, prev_close=prev_close, **kw)
 
 
@@ -285,8 +286,13 @@ class SeriesAndCircuit(unittest.TestCase):
         self.assertEqual(verdicts(res), ["BLOCK"])
         self.assertIn("circuit: the NSE price bands are from 2026-10-26, before today (2026-10-27): run check.py "
                       "--refresh-bands", reasons(res))
-        for fresh in (TODAY, "2026-10-28", None):
+        for fresh in (TODAY, "2026-10-28"):
             self.assertEqual(verdicts(run(demo(), bands_as_of=fresh)), ["PASS"], fresh)
+        for bad in (None, "", "27/10/2026", "2026-13-40", "yesterday", 20261027):
+            res = run(demo(), bands_as_of=bad)
+            self.assertEqual(verdicts(res), ["BLOCK"], bad)
+            self.assertIn("no valid as_of date", reasons(res))
+            self.assertIn("run check.py --refresh-bands", reasons(res))
 
     def test_a_symbol_missing_from_fresh_bands_is_a_warning(self):
         res = run(rename(demo(), "NEWCO"), prev_close={"NEWCO": 1000.0}, universe=["NEWCO"], bands_as_of=TODAY)
@@ -297,7 +303,8 @@ class SeriesAndCircuit(unittest.TestCase):
         pf = {"cash": 25905.0, "positions": [{"symbol": "DEMO", "qty": 73}]}
         o = demo()
         o["legs"] = [lg for lg in o["legs"] if lg["role"] != "entry"]
-        for kw in ({"bands": None}, {"bands_as_of": "2026-10-01"}, {"prev_close": {}}):
+        for kw in ({"bands": None}, {"bands_as_of": "2026-10-01"}, {"bands_as_of": None},
+                   {"bands_as_of": "not-a-date"}, {"prev_close": {}}):
             res = run(o, portfolio=pf, **kw)
             self.assertEqual((verdicts(res), res["results"][0]["kind"]), (["PASS"], "exit"), kw)
 
@@ -609,6 +616,35 @@ class Cli(unittest.TestCase):
                 self.assertEqual(len(calls), 2)
             finally:
                 check.fetch_sec_list = real
+
+    def test_a_bands_json_with_no_or_a_bad_as_of_is_stale(self):
+        for as_of in (None, "27-10-2026", "2026-02-30", 5):
+            with tempfile.TemporaryDirectory() as d:
+                cache = os.path.join(d, "bands.json")
+                doc = {"bands": BANDS}
+                if as_of is not None:
+                    doc["as_of"] = as_of
+                with open(cache, "w") as fh:
+                    json.dump(doc, fh)
+                self.assertIsNone(check.load_bands(cache)[1], as_of)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = check.main(self.base(d, "--bands", cache, "--now", NOW, "--offline", d, "--json"))
+                out = json.loads(buf.getvalue())
+                self.assertEqual(code, 1, as_of)
+                self.assertIn("run check.py --refresh-bands", " | ".join(out["results"][0]["reasons"]))
+                self.assertIn("no valid as_of date", " ".join(out["warnings"]))
+                # exit-only still goes through
+                ex, pp = os.path.join(d, "exit.json"), os.path.join(d, "pf.json")
+                with open(ex, "w") as fh:
+                    json.dump({"orders": [Exits().sell()]}, fh)
+                with open(pp, "w") as fh:
+                    json.dump(Exits.PF, fh)
+                args = self.base(d, "--bands", cache, "--now", NOW, "--offline", d)
+                args[args.index("--orders") + 1] = ex
+                args[args.index("--portfolio") + 1] = pp
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(check.main(args), 0, as_of)
 
     def test_a_raw_csv_takes_its_file_time_as_as_of(self):
         with tempfile.TemporaryDirectory() as d:
