@@ -39,6 +39,10 @@ SPARK_MAX = 20
 YAHOO = "https://query2.finance.yahoo.com"
 NSE_EQUITY_L = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 NSE_SEC_LIST = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
+NSE_ANNOUNCEMENTS = "https://nsearchives.nseindia.com/content/RSS/Online_announcements.xml"
+GOOGLE_RELIANCE = ("https://news.google.com/rss/search?q=%22Reliance%20Industries%22%20share"
+                   "&hl=en-IN&gl=IN&ceid=IN:en")
+NEWS_KEEP = {"google-RELIANCE.xml": (15, None), "Online_announcements.xml": (30, "<title>UCO Bank</title>")}
 NSE_HOLIDAY_MASTER = "https://www.nseindia.com/api/holiday-master?type=trading"
 
 # Liquid names kept in the trimmed EQUITY_L.csv (plus M&M, BAJAJ-AUTO and two BE rows, see trim_equity_l).
@@ -90,6 +94,17 @@ REGISTRY = {
         "files": [
             (YAHOO + "/v8/finance/chart/{sym}?range=1d&interval=1d", "yahoo-{sym}.json"),
             (NSE_HOLIDAY_MASTER, "holiday-master.json"),
+        ],
+    },
+    "nse-news": {
+        # Google News India RSS for one company query, NSE's corporate announcements RSS (both trimmed, see
+        # trim_items) and one Yahoo chart JSON (chart-RELIANCE.json, the move news.py reads)
+        "symbols": ["RELIANCE"],
+        "per_symbol": True,
+        "files": [
+            (GOOGLE_RELIANCE, "google-RELIANCE.xml"),
+            (NSE_ANNOUNCEMENTS, "Online_announcements.xml"),
+            (YAHOO + "/v8/finance/chart/{sym}?range=1d&interval=5m", "chart-{sym}.json"),
         ],
     },
     "nse-timemachine": {
@@ -166,6 +181,22 @@ def trim_sec_list(text):
 def trim_holiday_master(doc):
     """holiday-master?type=trading -> the CM list (what alerts.py reads) plus CBM, one other segment."""
     return {k: doc[k] for k in ("CM", "CBM") if k in doc}
+
+
+def trim_items(text, limit, must=None):
+    """RSS text -> the first `limit` <item> blocks (plus the first one holding `must`), the rest untouched."""
+    import re
+    items = list(re.finditer(r"<item>.*?</item>\s*", text, re.S))
+    if not items:
+        return text
+    keep = items[:limit]
+    if must and not any(must in m.group(0) for m in keep):
+        extra = next((m for m in items if must in m.group(0)), None)
+        if extra:
+            keep = keep[:-1] + [extra]
+        else:
+            print("capture: no item with %s in today's feed" % must, file=sys.stderr)
+    return text[:items[0].start()] + "".join(m.group(0) for m in keep) + text[items[-1].end():]
 
 
 def eq_symbols(csv_text):
@@ -335,6 +366,8 @@ def capture(skill, day, outdir, pause):
                 symbols = eq_symbols(text)
             elif name == "sec_list.csv":
                 text = trim_sec_list(text)
+            elif name in NEWS_KEEP:
+                text = trim_items(text, *NEWS_KEEP[name])
             elif name == "holiday-master.json":
                 text = json.dumps(trim_holiday_master(json.loads(text)), separators=(",", ":"))
             written.append(write_fixture(outdir, name, text))
