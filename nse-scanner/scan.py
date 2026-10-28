@@ -96,7 +96,7 @@ CLOSE = _dt.time(15, 30)
 CALENDAR_YEARS = (2026,)
 # NSE CM trading holidays (weekdays only), from nseindia.com holiday-master?type=trading, fetched 2026-10-28.
 NSE_HOLIDAYS = {
-    "2026-01-15": "Municipal Corporation Elections (Maharashtra)",
+    "2026-01-15": "Municipal Corporation Election - Maharashtra",
     "2026-01-26": "Republic Day",
     "2026-03-03": "Holi",
     "2026-03-26": "Shri Ram Navami",
