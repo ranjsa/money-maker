@@ -1,0 +1,43 @@
+{
+  "day": "2026-10-27",
+  "at": "10:15",
+  "captured_at": "2026-10-28T22:04:34+05:30",
+  "orb_hits": 20,
+  "orb_symbols": [
+    "KOTAKBANK",
+    "POWERGRID",
+    "SUNPHARMA",
+    "ADANIPORTS",
+    "AXISBANK",
+    "BHARTIARTL",
+    "CIPLA",
+    "DRREDDY",
+    "LT",
+    "NTPC",
+    "TITAN",
+    "BAJFINANCE",
+    "HEROMOTOCO",
+    "MARUTI",
+    "TATASTEEL",
+    "BAJAJ-AUTO",
+    "ICICIBANK",
+    "JSWSTEEL",
+    "NESTLEIND",
+    "VEDL"
+  ],
+  "orb_scanned": 38,
+  "daily_hits": 11,
+  "daily_symbols": [
+    "BAJAJ-AUTO",
+    "BHARTIARTL",
+    "EICHERMOT",
+    "HCLTECH",
+    "INFY",
+    "MARUTI",
+    "NESTLEIND",
+    "NTPC",
+    "TCS",
+    "VEDL",
+    "WIPRO"
+  ]
+}
