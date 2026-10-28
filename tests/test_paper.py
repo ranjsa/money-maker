@@ -383,6 +383,23 @@ class PaperRun(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual([r["status"] for r in self.records(self.state)][-3:], ["placed", "filled", "filled"])
 
+    def test_a_decline_after_the_entry_filled_still_plays_the_exit(self):
+        # round 2: the position is open on paper; a later "no" cannot strand it without its exit
+        self.approve_at("2026-10-27T09:35:00+05:30")
+        self.cut_after("11:00")
+        code, text, err = self.go(approved=None)
+        self.assertEqual(code, 0, err)
+        self.assertIn("still open", text)
+        self.add_record("declined", "2026-10-27T11:05:00+05:30")
+        with open(BARS_PATH, encoding="utf-8") as fh:
+            self.chart = json.load(fh)
+        self.set_bar("13:00", 1010.0, 1011.0, 1004.0, 1006.0)
+        code, text, err = self.go(approved=None)
+        self.assertEqual(code, 0, err)
+        recs = self.records(self.state)
+        self.assertEqual(len([r for r in recs if r.get("leg") == "entry"]), 1)
+        self.assertEqual(self.exit_rec(self.state)["price"], 1005.2)
+
     def test_every_paper_record_carries_the_real_clock(self):
         self.approve_at("2026-10-27T09:35:00+05:30")
         self.set_bar("10:05", 1009.0, 1010.0, 1004.0, 1006.0)

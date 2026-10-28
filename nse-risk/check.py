@@ -732,8 +732,8 @@ def held_entries(state, today, skip=()):
             continue
         fp = r.get("fingerprint")
         later = [x for x in recs[i + 1:] if fp is not None and x.get("fingerprint") == fp]
-        if any(x.get("status") in PLACED_ENDS for x in later):
-            continue
+        if any(x.get("status") in PLACED_ENDS and x.get("leg") in (None, "", "entry") for x in later):
+            continue                     # a failed stop or target leg does not end the entry's wait
         out.append(i)
     held = []
     for i in out:
@@ -883,12 +883,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
     chg_cfg = c.get("charges") or {}
     acct, top_warn = account(c, portfolio, prices)
     blocked = {str(b).strip().upper() for b in c.get("blocked") or []}
-    # the groups being checked: their own open yes or unfilled placed entry is this check, not a second
-    # trade (so an approved group re-checks as it did before the yes); once its entry fills it counts
+    # the groups being checked that are already approved or placed (entry not filled yet) stay in today's
+    # totals, so every other group is checked against them; each one's own share is taken out only while
+    # it is itself re-checked (it then re-checks as it did before the yes), and it is not its own duplicate
     filled_fps = entry_filled_fps(state, today)
     mine = {fingerprint(o) for o in orders if isinstance(o, dict)} - filled_fps
-    waiting = [r for r in approved_open(state, today) if r.get("fingerprint") not in mine]
-    done_today = [r for r in placed_today(state, today) if r.get("fingerprint") not in mine] + waiting
+    waiting = approved_open(state, today)
+    done_today = placed_today(state, today) + waiting
     orders_today = count_orders(done_today)
     entries_today = [r for r in done_today if rec_is_entry(r)]
     loss_today = Decimal("0.00")
@@ -899,14 +900,21 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                             "the daily loss" % (rec_side(r), rec_symbol(r)))
         else:
             loss_today += ml
-    placed_keys = {(rec_symbol(r), rec_side(r)) for r in done_today}
+    placed_keys = {(rec_symbol(r), rec_side(r)) for r in done_today if r.get("fingerprint") not in mine}
+    own = {}
+    for fp in mine:
+        rs = [r for r in done_today if r.get("fingerprint") == fp]
+        if rs:
+            ents = [r for r in rs if rec_is_entry(r)]
+            own[fp] = {"entries": len(ents), "orders": count_orders(rs), "hold": Decimal("0.00"), "sym": "",
+                       "loss": sum((_d(r.get("max_loss")) or Decimal("0.00") for r in ents), Decimal("0.00"))}
     if waiting:
         top_warn.append("%d approved group%s not placed yet (%s) count%s toward today's trades, orders, loss and "
                         "cash until placed or declined (ticket.py result or decline)"
                         % (len(waiting), "" if len(waiting) == 1 else "s",
                            ", ".join("%s %s" % (rec_side(r), rec_symbol(r)) for r in waiting),
                            "s" if len(waiting) == 1 else ""))
-    for r, rest in held_entries(state, today, skip=mine):
+    for r, rest in held_entries(state, today):
         # hold the cash a yes or a placed entry is about to spend (no shares: nothing is bought until the
         # fill); a fill already moved its part into the portfolio, so only the unfilled rest is held
         val = _d(r.get("value_inr"))
@@ -918,6 +926,21 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         sym = rec_symbol(r)
         acct["cash"] -= val
         acct["values"][sym] = acct["values"].get(sym, Decimal("0.00")) + val
+        if r.get("fingerprint") in own:
+            own[r["fingerprint"]]["hold"] += val
+            own[r["fingerprint"]]["sym"] = sym
+    # the running totals each group is checked against (today's records, less a re-checked group's own)
+    day_entries, day_loss, day_orders = len(entries_today), loss_today, orders_today
+
+    def credit(o_, sign):
+        """Take a re-checked group's own records out of the totals (sign -1) or put them back (+1)."""
+        nonlocal day_entries, day_loss, day_orders
+        day_entries += sign * o_["entries"]
+        day_loss += sign * o_["loss"]
+        day_orders += sign * o_["orders"]
+        if o_["sym"]:
+            acct["cash"] -= sign * o_["hold"]
+            acct["values"][o_["sym"]] = acct["values"].get(o_["sym"], Decimal("0.00")) + sign * o_["hold"]
     win_reasons, win_warns = window_check(now_utc, c)
     cal = calendar_warning(local.date(), c)
     if cal:
@@ -944,6 +967,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         reasons, warns, info = [], [], []
         later = []                       # entry-only reasons, turned into warnings for an exit
         o = o if isinstance(o, dict) else {}
+        own_c = own.pop(fingerprint(o), None)     # its own yes or placed entry: re-checked, not counted twice
+        if own_c:
+            credit(own_c, -1)
         group = str(o.get("group") or "#%d" % i)
         plan = o.get("plan") if isinstance(o.get("plan"), dict) else {}
         legs, fmt, lw, sym, exch = read_legs(o)
@@ -1200,14 +1226,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                                      % _num(min_rr))
             daily = _d(c.get("max_daily_loss_inr"))
             if daily and max_loss is not None:
-                used = loss_today + batch_loss
+                used = day_loss + batch_loss
                 if used + max_loss > daily:
                     later.append("daily loss: %s already at risk today plus %s for this one = %s, over your %s "
                                  "daily loss limit" % (inr(used), inr(max_loss), inr(used + max_loss), inr(daily)))
             cap_t = int(c.get("max_trades_per_day") or 0)
-            if cap_t and len(entries_today) + batch_entries >= cap_t:
+            if cap_t and day_entries + batch_entries >= cap_t:
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
-                             "is %d a day" % (len(entries_today), batch_entries, cap_t))
+                             "is %d a day" % (day_entries, batch_entries, cap_t))
             if stop and ref and risk_ps:
                 info.append("entry %s (%s), stop %s, target %s: risk %s a share"
                             % (inr(ref), REF_WORDS.get(ref_from, ref_from), inr(stop),
@@ -1220,8 +1246,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                                (" (min %s)" % _num(c["min_reward_risk"])) if _f(c.get("min_reward_risk")) else ""))
             if daily or cap_t:
                 info.append("today before this: %d of %s trades, %s of %s daily loss"
-                            % (len(entries_today) + batch_entries, cap_t or "unlimited",
-                               inr(loss_today + batch_loss), inr(daily) if daily else "no limit on"))
+                            % (day_entries + batch_entries, cap_t or "unlimited",
+                               inr(day_loss + batch_loss), inr(daily) if daily else "no limit on"))
         later.extend(win_reasons)
 
         # duplicates and the daily order limit (Kite orders: one per leg)
@@ -1231,9 +1257,9 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         if key in placed_keys:
             later.append("duplicate: a %s %s was already approved or placed today" % (side, sym))
         cap_n = int(c.get("max_orders_per_day") or 0)
-        if cap_n and orders_today + batch_orders + len(legs) > cap_n:
+        if cap_n and day_orders + batch_orders + len(legs) > cap_n:
             later.append("daily limit: %d orders placed today plus %d passed earlier in this batch, this group is "
-                         "%d more, your limit is %d a day" % (orders_today, batch_orders, len(legs), cap_n))
+                         "%d more, your limit is %d a day" % (day_orders, batch_orders, len(legs), cap_n))
         seen.add(key)
 
         if kind == "entry":
@@ -1242,7 +1268,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             warns.extend("exit, not blocked: " + x for x in later)
 
         verdict = "BLOCK" if reasons else "PASS"
-        if verdict == "PASS":
+        if own_c:
+            # still approved or placed, pass or block: back into today's totals for the groups after it,
+            # and not added to the batch a second time
+            credit(own_c, 1)
+        if verdict == "PASS" and not own_c:
             batch_orders += len(legs)
             if kind == "entry":
                 batch_entries += 1

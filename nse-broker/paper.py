@@ -653,7 +653,9 @@ def _approval_time(a, state, fp):
     if not found:
         raise PaperError("no yes is recorded for this group: run ticket.py approve with the user's yes first "
                          "(or pass --approved-at to replay a past session, which is never counted)")
-    if latest is not found:
+    filled = any(r.get("fingerprint") == fp and r.get("status") == "filled" and r.get("leg") == "entry"
+                 and r.get("date") == found.get("date") for r in state["orders"])
+    if latest is not found and not filled:     # an open position always gets its exit played
         raise PaperError("the yes for this group was followed by a \"%s\" record (at %s): a yes that was taken "
                          "back is not played. Ask the user again (ticket.py show, then approve)"
                          % (latest.get("status"), latest.get("at")))

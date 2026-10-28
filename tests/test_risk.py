@@ -567,6 +567,59 @@ class LossAndLimits(unittest.TestCase):
         res = run(demo(), state={"orders": [a, self.placed_entry("DEMO", fp, value=74095.0), f]})
         self.assertIn("duplicate: a BUY DEMO was already approved or placed today", reasons(res))
 
+    # ------------------------------------------------ Residual fix round 2
+    def mine_approved(self, status="approved", at="10:05", **extra):
+        r = {"group": "DEMO-1", "fingerprint": check.fingerprint(demo()), "symbol": "DEMO", "side": "BUY",
+             "qty": 73, "kind": "entry", "status": status, "date": TODAY, "at": "%sT%s:00+05:30" % (TODAY, at),
+             "max_loss": 788.66, "legs": 3, "value_inr": 74095.0}
+        r.update(extra)
+        return r
+
+    def test_a_batch_groups_own_approval_still_counts_for_the_others(self):
+        a, b = demo(), rename(demo(), "TCS")
+        for name, c in (("trades", cfg(max_trades_per_day=1)), ("daily limit", cfg(max_orders_per_day=3)),
+                        ("daily loss", cfg(max_daily_loss_inr=1000)), ("cash", cfg(cash_buffer_pct=20))):
+            for st in ({"orders": [self.mine_approved()]},
+                       {"orders": [self.mine_approved(),
+                                   self.mine_approved(status="placed", at="10:06", leg="entry")]}):
+                self.assertEqual(verdicts(run([a], c, state=st)), ["PASS"], (name, reasons(run([a], c, state=st))))
+                self.assertEqual(verdicts(run([b], c, state=st)), ["BLOCK"], name)
+                res = run([b, a], c, state=st)
+                self.assertEqual(verdicts(res), ["BLOCK", "PASS"], name)
+                self.assertTrue(any(x.startswith(name) or (name == "cash" and x.startswith("leverage"))
+                                    for x in res["results"][0]["reasons"]), (name, res["results"][0]["reasons"]))
+                res = run([a, b], c, state=st)
+                self.assertEqual(verdicts(res), ["PASS", "BLOCK"], name)
+                # the totals reported for today are unchanged by A being in the batch
+                self.assertEqual(res["today"], run([b], c, state=st)["today"], name)
+
+    def test_a_batch_group_that_blocks_itself_still_counts_for_the_others(self):
+        b2 = rename(demo(), "TCS")
+        for lg in b2["legs"]:
+            lg["quantity"] = 10
+        st = {"orders": [self.mine_approved()]}
+        c = cfg(max_trades_per_day=1, max_loss_per_trade_inr=500)
+        res = run([demo(), b2], c, state=st)
+        self.assertEqual(verdicts(res), ["BLOCK", "BLOCK"])
+        self.assertIn("trades: 1 entries placed today", reasons(res, 1))
+        self.assertEqual(verdicts(run([b2], c, state=st)), ["BLOCK"])
+        res = run([demo(), b2], cfg(max_trades_per_day=1), state=st)    # A passes its re-check: counted once
+        self.assertEqual(verdicts(res), ["PASS", "BLOCK"])
+        self.assertIn("trades: 1 entries placed today plus 0 passed earlier in this batch", reasons(res, 1))
+
+    def test_a_failed_stop_or_target_does_not_release_the_entry_hold(self):
+        base = {"group": "AAA-1", "fingerprint": "fp-AAA", "symbol": "AAA", "side": "BUY", "qty": 73,
+                "kind": "entry", "date": TODAY, "max_loss": 500.0, "legs": 3, "value_inr": 20000.0}
+        recs = [dict(base, status="approved", at=TODAY + "T09:40:00+05:30"),
+                dict(base, status="placed", leg="entry", at=TODAY + "T09:41:00+05:30"),
+                dict(base, status="filled", leg="entry", qty=30, at=TODAY + "T09:42:00+05:30")]
+        held = run(rename(demo(), "TCS"), state={"orders": recs})["cash_after"]
+        for st, lg in (("failed", "stop"), ("denied", "target")):
+            end = dict(base, status=st, leg=lg, kind="exit", side="SELL", at=TODAY + "T09:43:00+05:30")
+            self.assertEqual(run(rename(demo(), "TCS"), state={"orders": recs + [end]})["cash_after"], held, lg)
+        end = dict(base, status="failed", leg="entry", at=TODAY + "T09:43:00+05:30")
+        self.assertGreater(run(rename(demo(), "TCS"), state={"orders": recs + [end]})["cash_after"], held)
+
     def test_live_account_warns(self):
         # I5: LIVE is "broker": "kite" (with "paper": false to match)
         res = run(demo(), cfg(broker="kite", paper=False))
