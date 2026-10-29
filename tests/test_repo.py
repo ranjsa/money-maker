@@ -7,11 +7,11 @@ import unittest
 
 from _load import ROOT
 
-# the NSE port: the eleven folders the repo card shows
+# the NSE port: the twelve folders the repo card shows
 SKILLS = ["nse-scanner", "nse-news", "nse-entry", "nse-exit", "nse-timemachine",
           "nse-risk", "nse-budget", "nse-broker", "nse-alerts", "nse-analyst",
-          "nse-deals"]
-ABOUT = ("11 Claude skills for day trading on NSE: scan every EQ chart, track exchange filings and news, "
+          "nse-deals", "nse-orderbook"]
+ABOUT = ("12 Claude skills for trading on NSE: scan every EQ chart, track exchange filings, order wins and news, "
          "time every entry and exit, and replay every outcome before you risk a rupee.")
 # skills on the way to an order carry the safety block
 ORDER_PATH = ["nse-scanner", "nse-entry", "nse-exit", "nse-timemachine", "nse-budget",
@@ -35,7 +35,7 @@ def every_text_file():
 
 
 class Repo(unittest.TestCase):
-    def test_eleven_skill_folders_at_the_root(self):
+    def test_twelve_skill_folders_at_the_root(self):
         found = sorted(d for d in os.listdir(ROOT)
                        if os.path.isfile(os.path.join(ROOT, d, "SKILL.md")))
         self.assertEqual(found, sorted(SKILLS))

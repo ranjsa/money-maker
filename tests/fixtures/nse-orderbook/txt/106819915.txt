@@ -1,0 +1,106 @@
+16.10.2026
+
+ To,                                             To,
+ General Manager                                 General Manager
+ Department of Corporate Services,               BSE Limited
+ National Stock Exchange of India Limited        Phiroze Jeejeebhoy Tower,
+ Exchange Plaza, C-1, Block G,                   Dalal Street,
+ BandraKurla Complex, Bandra (E), Mumbai,        Fort, Mumbai-400001,
+ Maharashtra 400051.                             Maharashtra.
+ Symbol: DSSL                                    Security code: 532365
+
+Sub: Intimation under Regulation 30 of the SEBI (Listing Obligations and Disclosure
+Requirements) Regulations, 2015
+
+Dear Sir/Madam,
+
+Pursuant to Regulation 30 and other applicable regulations, if any, of the Securities and
+Exchange Board of India (Listing Obligations and Disclosure Requirements) Regulations, 2015,
+and amendments thereof, please find enclosed intimation for securing project from Supreme
+Court of India worth Rs. 137.15 Crore (inclusive of GST) for SITC of 728 Servers for hosting the
+Case Information System (CIS) software of the District Courts.
+
+The details required under Regulation 30 of the Listing Regulations read with SEBI Circular No.
+CIR/CFD/CMD/4/2015, dated September 09, 2015, are enclosed as Annexure 1.
+
+This is for your information and records.
+
+Thanking You,
+
+Yours faithfully,
+
+For Dynacons Systems & Solutions Limited
+Pooja    Digitally signed
+         by Pooja Girish
+Girish   Patwa
+         Date: 2026.10.16
+Patwa    12:45:33 +05'30'
+
+
+Pooja Patwa
+Company Secretary and
+Compliance Officer
+Mem. No. -60986
+Annexure 1
+Details required under Regulation 30 of Listing Regulations read along with SEBI Circular
+CIR/CFD/CMD/4/2015 dated September 09, 2015.
+ Sr.    Particular                                 Remarks
+ No.
+ 1      Name of the entity awarding the Supreme Court of India
+        order(s)/contract(s)
+ 2      significant terms and conditions of Project involves SITC of 728 Servers at 728
+        order(s)/contract(s) awarded in brief;     District Courts for hosting the Case Information
+                                                   System (CIS) software of the District Courts.
+ 3      whether order(s)/contract(s) have been Domestic Entity
+        awarded by domestic/ international entity;
+ 4      nature of order(s) / contract(s);          Please refer Annexure -II
+
+ 5       whether domestic or international;              Domestic
+ 6       time      period       by      which      the   3 years
+         order(s)/contract(s) is to be executed;
+ 7       broad consideration or size of            the   Rs. 137.15 crores (Rupees One hundred Thirty-
+         order(s)/contract(s);                           Seven Crores and Fifteen Lakhs only) (Including
+                                                         GST)
+ 8       whether the promoter/ promoter group /          No
+         group companies have any interest in the
+         entity        that        awarded       the
+         order(s)/contract(s)?     If yes, nature of
+         interest and details thereof;
+ 9       whether the order(s)/contract(s) would fall     No
+         within related party transactions? If yes,
+         whether the same is done at “arm’s length”.
+
+For Dynacons Systems & Solutions Limited
+Pooja     Digitally signed
+          by Pooja Girish
+Girish    Patwa
+          Date: 2026.10.16
+Patwa     12:46:06 +05'30'
+Pooja Patwa
+Company Secretary &
+Compliance Officer
+Mem. No.- 60986
+Intimation under Regulation 30 of the SEBI (Listing Obligations and Disclosure
+Requirements) Regulations, 2015
+
+                                                                                    Annexure-II
+
+Dynacons Secures the Project worth Rs 137.15 crores (inclusive of GST) from Supreme Court of
+India for supply, installation, testing & commissioning of 728 Servers along with requisite cables,
+accessories at 728 District Courts of Indian Judiciary, PAN India for hosting the existing Case
+Information System (CIS) software of the District Courts.
+
+
+The solution is to primarily host the existing Case Information System (CIS) software of the
+District Courts. The project is structured as a multi-year engagement with ongoing support for
+a period of 3 years.
+
+Project Overview
+
+The scope of the project involves Supply, installation, testing and commissioning (SITC) of
+Servers to be deployed across 728 District Court headquarters, provisioning of all software and
+support for the entire contract period. The implementation includes server virtualization, high
+availability & clustering, centralized management console & integration with existing ICT
+infrastructure. The technical support will be provided for 24 x 7 x 365 for the solution provided
+during the contract period of 3 years including remote & onsite support as required.
+

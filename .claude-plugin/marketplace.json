@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "nse-day-trader-skill",
-      "description": "Eleven Claude skills for day trading on NSE: a chart scanner, a news monitor, an entry timer, an exit planner, a time machine that replays 10,000 sessions, a risk manager, a budget manager, an order executor (paper by default, never without your yes), price alerts, a results analyst and a bulk/block deals tracker.",
+      "description": "Twelve Claude skills for trading on NSE: a chart scanner, a news monitor, an entry timer, an exit planner, a time machine that replays 10,000 sessions, a risk manager, a budget manager, an order executor (paper by default, never without your yes), price alerts, a results analyst, a bulk/block deals tracker and an order-book screen with a backtest.",
       "source": "./",
       "category": "productivity",
       "homepage": "https://github.com/ranjsa/money-maker"

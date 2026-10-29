@@ -19,7 +19,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MASTER = os.path.join("nse-exit", "exit.py")
 SKILLS = ["nse-scanner", "nse-news", "nse-entry", "nse-exit", "nse-timemachine",
-          "nse-risk", "nse-budget", "nse-broker", "nse-alerts", "nse-analyst", "nse-deals"]
+          "nse-risk", "nse-budget", "nse-broker", "nse-alerts", "nse-analyst", "nse-deals", "nse-orderbook"]
 CHARGE_FILES = [os.path.join("nse-budget", "size.py"), os.path.join("nse-risk", "check.py"),
                 os.path.join("nse-timemachine", "timemachine.py"), os.path.join("nse-broker", "paper.py")]
 

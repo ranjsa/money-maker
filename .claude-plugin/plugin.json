@@ -1,6 +1,6 @@
 {
   "name": "nse-day-trader-skill",
-  "description": "11 Claude skills for day trading on NSE: scan every EQ chart, track exchange filings and news, time every entry and exit, and replay every outcome before you risk a rupee.",
+  "description": "12 Claude skills for trading on NSE: scan every EQ chart, track exchange filings, order wins and news, time every entry and exit, and replay every outcome before you risk a rupee.",
   "version": "0.1.0",
   "author": {
     "name": "Tushar Jha",

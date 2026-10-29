@@ -1,6 +1,6 @@
 # The NSE Day Trader skill
 
-11 Claude skills for day trading on NSE: scan every EQ chart, track exchange filings and news, time every entry and exit, and replay every outcome before you risk a rupee.
+12 Claude skills for trading on NSE: scan every EQ chart, track exchange filings, order wins and news, time every entry and exit, and replay every outcome before you risk a rupee.
 
 Free, MIT, no signup, no API key. The tools are plain Python that read free
 public data: Yahoo Finance charts, NSE's public archives (the EQ symbol list,
@@ -57,7 +57,7 @@ The tools need Python 3.8 or newer. Nothing to pip install. Your rules live in
 ₹3,000 a day, MIS, flat by 15:10 IST, paper), or let `/nse-budget` ask you for
 each value.
 
-## The eleven
+## The twelve
 
 | command | job | what it does |
 | --- | --- | --- |
@@ -72,6 +72,7 @@ each value.
 | `/nse-alerts` | Price Alerts | Rings when a price, a stop, the flat-by time or the opening bell hits. |
 | `/nse-analyst` | Results Analyst | Reads a company's quarterly results and sums up what changed, in crore. |
 | `/nse-deals` | Deals Tracker | Reads NSE's bulk, block and insider-trading disclosures and flags the stocks you watch. |
+| `/nse-orderbook` | Order-Book Screen | Reads companies' order-win filings, sizes each order against revenue, keeps only companies whose revenue is growing, and backtests the screen. |
 
 ## How to use it
 
